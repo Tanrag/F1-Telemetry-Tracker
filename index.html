@@ -2,38 +2,97 @@
 <html>
 <head>
   <title>F1 Telemetry Tracker</title>
+  <style>
+    body { font-family: sans-serif; margin: 20px; }
+    .lap-header {
+      background: #222; color: white; padding: 10px;
+      cursor: pointer; margin-top: 10px; border-radius: 4px;
+    }
+    .lap-info { padding: 10px; background: #f0f0f0; }
+    table { border-collapse: collapse; width: 100%; margin-top: 5px; }
+    th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; font-size: 13px; }
+    .lap-content { display: none; }
+  </style>
 </head>
 <body>
   <h1>F1 Telemetry Tracker</h1>
 
-  <h2>Driver Telemetry</h2>
   <input id="driverInput" placeholder="e.g. NOR" value="NOR">
   <button onclick="loadTelemetry()">Load</button>
-  <table id="telemetryTable" border="1">
-    <thead><tr><th>Speed</th><th>Throttle</th><th>Brake</th><th>Gear</th><th>RPM</th></tr></thead>
-    <tbody></tbody>
-  </table>
+  <p id="status"></p>
+
+  <div id="laps"></div>
 
   <script>
     async function loadTelemetry() {
       const driver = document.getElementById('driverInput').value;
+      const status = document.getElementById('status');
+      const lapsDiv = document.getElementById('laps');
+      lapsDiv.innerHTML = '';
+      status.textContent = 'Loading... this may take a while.';
+
       const res = await fetch(`http://127.0.0.1:8000/telemetry/${driver}`);
       const data = await res.json();
+      status.textContent = '';
 
-      const tbody = document.querySelector('#telemetryTable tbody');
-      tbody.innerHTML = '';
+      const lapNumbers = Object.keys(data).sort((a, b) => a - b);
 
-      const keys = Object.keys(data.Speed);
-      keys.forEach(i => {
-        const row = document.createElement('tr');
-        row.innerHTML = `
-          <td>${data.Speed[i].toFixed(1)}</td>
-          <td>${data.Throttle[i]}</td>
-          <td>${data.Brake[i]}</td>
-          <td>${data.nGear[i]}</td>
-          <td>${data.RPM[i].toFixed(0)}</td>
+      lapNumbers.forEach(lapNum => {
+        const lap = data[lapNum];
+        const info = lap.lap_info;
+        const telemetry = lap.telemetry;
+        if (!telemetry || !telemetry.SpeedMph) return;
+
+        const header = document.createElement('div');
+        header.className = 'lap-header';
+        header.textContent = `Lap ${lapNum} — Time: ${info.LapTime} — Compound: ${info.Compound} — Tyre Life: ${info.TyreLife}`;
+        header.onclick = () => {
+          content.style.display = content.style.display === 'block' ? 'none' : 'block';
+        };
+
+        const content = document.createElement('div');
+        content.className = 'lap-content';
+
+        const infoBlock = document.createElement('div');
+        infoBlock.className = 'lap-info';
+        infoBlock.innerHTML = `
+          Sector 1: ${info.Sector1Time} | Sector 2: ${info.Sector2Time} | Sector 3: ${info.Sector3Time}<br>
+          Stint: ${info.Stint} | Position: ${info.Position} | Track Status: ${info.TrackStatus} | Accurate: ${info.IsAccurate}
         `;
-        tbody.appendChild(row);
+        content.appendChild(infoBlock);
+
+        const table = document.createElement('table');
+        table.innerHTML = `
+          <thead><tr>
+            <th>Speed (mph)</th><th>Throttle</th><th>Brake</th><th>Gear</th>
+            <th>RPM</th><th>DRS Active</th><th>Distance</th><th>Turn</th><th>Driver Ahead</th><th>Gap (s)</th>
+          </tr></thead>
+        `;
+        const tbody = document.createElement('tbody');
+
+        const keys = Object.keys(telemetry.SpeedMph);
+        keys.forEach(i => {
+          const row = document.createElement('tr');
+          row.innerHTML = `
+            <td>${telemetry.SpeedMph[i]?.toFixed(1) ?? ''}</td>
+            <td>${telemetry.Throttle[i] ?? ''}</td>
+            <td>${telemetry.Brake[i] ?? ''}</td>
+            <td>${telemetry.nGear[i] ?? ''}</td>
+            <td>${telemetry.RPM[i]?.toFixed(0) ?? ''}</td>
+            <td>${telemetry.DRSActive[i] ?? ''}</td>
+            <td>${telemetry.Distance[i]?.toFixed(1) ?? ''}</td>
+            <td>${telemetry.Turn[i] ?? ''}</td>
+            <td>${telemetry.DriverAheadName[i] ?? ''}</td>
+            <td>${telemetry.GapToDriverAhead[i]?.toFixed(2) ?? ''}</td>
+          `;
+          tbody.appendChild(row);
+        });
+
+        table.appendChild(tbody);
+        content.appendChild(table);
+
+        lapsDiv.appendChild(header);
+        lapsDiv.appendChild(content);
       });
     }
   </script>
