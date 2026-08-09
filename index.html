@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>F1 Telemetry Tracker</title>
+</head>
+<body>
+  <h1>F1 Telemetry Tracker</h1>
+
+  <h2>Driver Telemetry</h2>
+  <input id="driverInput" placeholder="e.g. NOR" value="NOR">
+  <button onclick="loadTelemetry()">Load</button>
+  <table id="telemetryTable" border="1">
+    <thead><tr><th>Speed</th><th>Throttle</th><th>Brake</th><th>Gear</th><th>RPM</th></tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <script>
+    async function loadTelemetry() {
+      const driver = document.getElementById('driverInput').value;
+      const res = await fetch(`http://127.0.0.1:8000/telemetry/${driver}`);
+      const data = await res.json();
+
+      const tbody = document.querySelector('#telemetryTable tbody');
+      tbody.innerHTML = '';
+
+      const keys = Object.keys(data.Speed);
+      keys.forEach(i => {
+        const row = document.createElement('tr');
+        row.innerHTML = `
+          <td>${data.Speed[i].toFixed(1)}</td>
+          <td>${data.Throttle[i]}</td>
+          <td>${data.Brake[i]}</td>
+          <td>${data.nGear[i]}</td>
+          <td>${data.RPM[i].toFixed(0)}</td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
+  </script>
+</body>
+</html>
