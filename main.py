@@ -39,13 +39,14 @@ def get_telemetry(driver: str):
         info = session.get_driver(drv)
         driver_number_to_name[drv] = info['FullName']
 
-    driver_laps = session.laps.pick_drivers(driver).iloc[:5]
+    driver_laps = session.laps.pick_drivers(driver).iloc[10:15]
     result = {}
 
     for _, lap in driver_laps.iterrows():
         lap_number = int(lap['LapNumber'])
 
         telemetry = lap.get_telemetry()
+        print(telemetry['DRS'].unique())
         telemetry = telemetry.add_driver_ahead()
 
         idx = np.searchsorted(corner_distances, telemetry['Distance'].values, side='right') - 1
@@ -53,6 +54,7 @@ def get_telemetry(driver: str):
         telemetry['Turn'] = corner_numbers[idx]
 
         telemetry['SpeedMph'] = telemetry['Speed'] * 0.621371
+        telemetry['DRSZone'] = telemetry['DRS'] == 8
         telemetry['DRSActive'] = telemetry['DRS'].isin([10, 12, 14])
         telemetry['DriverAheadName'] = telemetry['DriverAhead'].map(driver_number_to_name)
 
@@ -76,9 +78,9 @@ def get_telemetry(driver: str):
                 "IsAccurate": bool(lap['IsAccurate'])
             },
             "telemetry": json.loads(telemetry[[
-            'SpeedMph', 'Throttle', 'Brake', 'nGear', 'RPM', 'DRSActive',
-            'Distance', 'Turn', 'DriverAheadName', 'GapToDriverAhead'
-            ]].to_json())
+    'SpeedMph', 'Throttle', 'Brake', 'nGear', 'RPM', 'DRS', 'DRSZone', 'DRSActive',
+    'Distance', 'Turn', 'DriverAheadName', 'GapToDriverAhead'
+]].to_json())
         }
 
     return result

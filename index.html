@@ -65,7 +65,7 @@
         table.innerHTML = `
           <thead><tr>
             <th>Speed (mph)</th><th>Throttle</th><th>Brake</th><th>Gear</th>
-            <th>RPM</th><th>DRS Active</th><th>Distance</th><th>Turn</th><th>Driver Ahead</th><th>Gap (s)</th>
+            <th>RPM</th><th>DRS Zone</th><th>DRS Active</th><th>Distance</th><th>Turn</th><th>Driver Ahead</th><th>Gap (s)</th>
           </tr></thead>
         `;
         const tbody = document.createElement('tbody');
@@ -74,17 +74,18 @@
         keys.forEach(i => {
           const row = document.createElement('tr');
           row.innerHTML = `
-            <td>${telemetry.SpeedMph[i]?.toFixed(1) ?? ''}</td>
-            <td>${telemetry.Throttle[i] ?? ''}</td>
-            <td>${telemetry.Brake[i] ?? ''}</td>
-            <td>${telemetry.nGear[i] ?? ''}</td>
-            <td>${telemetry.RPM[i]?.toFixed(0) ?? ''}</td>
-            <td>${telemetry.DRSActive[i] ?? ''}</td>
-            <td>${telemetry.Distance[i]?.toFixed(1) ?? ''}</td>
-            <td>${telemetry.Turn[i] ?? ''}</td>
-            <td>${telemetry.DriverAheadName[i] ?? ''}</td>
-            <td>${telemetry.GapToDriverAhead[i]?.toFixed(2) ?? ''}</td>
-          `;
+          <td>${telemetry.SpeedMph[i]?.toFixed(1) ?? ''}</td>
+          <td>${telemetry.Throttle[i] ?? ''}</td>
+          <td>${telemetry.Brake[i] ?? ''}</td>
+          <td>${telemetry.nGear[i] ?? ''}</td>
+          <td>${telemetry.RPM[i]?.toFixed(0) ?? ''}</td>
+          <td style="color: ${telemetry.DRSZone[i] ? 'orange' : 'inherit'}">${telemetry.DRSZone[i] ? '🟠 Zone' : ''}</td>
+          <td style="color: ${telemetry.DRSActive[i] ? 'green' : 'inherit'}">${telemetry.DRSActive[i] ? '🟢 Open' : ''}</td>
+          <td>${telemetry.Distance[i]?.toFixed(1) ?? ''}</td>
+          <td>${telemetry.Turn[i] ?? ''}</td>
+          <td>${telemetry.DriverAheadName[i] ?? ''}</td>
+          <td>${telemetry.GapToDriverAhead[i]?.toFixed(2) ?? ''}</td>
+`;
           tbody.appendChild(row);
         });
 
