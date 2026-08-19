@@ -17,7 +17,7 @@
 <body>
   <h1>F1 Telemetry Tracker</h1>
 
-  <input id="driverInput" placeholder="e.g. NOR" value="NOR">
+  <input id="driverInput" placeholder="e.g. VER" value="VER">
   <button onclick="loadTelemetry()">Load</button>
   <p id="status"></p>
 
@@ -65,7 +65,7 @@
         table.innerHTML = `
           <thead><tr>
             <th>Speed (mph)</th><th>Throttle</th><th>Brake</th><th>Gear</th>
-            <th>RPM</th><th>DRS Zone</th><th>DRS Active</th><th>Distance</th><th>Turn</th><th>Driver Ahead</th><th>Gap (s)</th>
+            <th>RPM</th><th>Distance</th><th>Turn</th><th>Driver Ahead</th><th>Gap (s)</th>
           </tr></thead>
         `;
         const tbody = document.createElement('tbody');
@@ -79,8 +79,6 @@
           <td>${telemetry.Brake[i] ?? ''}</td>
           <td>${telemetry.nGear[i] ?? ''}</td>
           <td>${telemetry.RPM[i]?.toFixed(0) ?? ''}</td>
-          <td style="color: ${telemetry.DRSZone[i] ? 'orange' : 'inherit'}">${telemetry.DRSZone[i] ? '🟠 Zone' : ''}</td>
-          <td style="color: ${telemetry.DRSActive[i] ? 'green' : 'inherit'}">${telemetry.DRSActive[i] ? '🟢 Open' : ''}</td>
           <td>${telemetry.Distance[i]?.toFixed(1) ?? ''}</td>
           <td>${telemetry.Turn[i] ?? ''}</td>
           <td>${telemetry.DriverAheadName[i] ?? ''}</td>
@@ -95,6 +93,339 @@
         lapsDiv.appendChild(header);
         lapsDiv.appendChild(content);
       });
+    }
+  </script>
+
+  <h2>Track Map Replay</h2>
+  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <label>Start Lap: <input id="lapStartInput" type="number" value="12" style="width:70px;"></label>
+    <label>End Lap: <input id="lapEndInput" type="number" value="14" style="width:70px;"></label>
+    <button onclick="loadReplay()">Load Replay</button>
+    <button id="playPauseBtn" onclick="togglePlayPause()">Pause</button>
+    <button id="rewindBtn">⏪</button>
+    <button id="forwardBtn">⏩</button>
+    <span>Speed: <span id="speedLabel">1x</span></span>
+    <button onclick="changeSpeed(-0.5)">-</button>
+    <button onclick="changeSpeed(0.5)">+</button>
+  </div>
+  <br>
+  <div style="display:flex; gap:16px; align-items:flex-start; width:100%;">
+    <svg id="trackSvg" viewBox="0 0 1400 800"
+        style="background:#111; border-radius:8px; width:78%; height:auto; flex-shrink:0;"></svg>
+    <div id="leaderboard" style="
+      flex:1; min-width:220px; background:#111; color:#fff; border-radius:8px;
+      padding:10px; font-size:13px; max-height:800px; overflow-y:auto;
+    "></div>
+  </div>
+  <div id="tooltip" style="
+    position:absolute; display:none; pointer-events:none;
+    background:rgba(20,20,20,0.95); color:#fff; padding:6px 10px;
+    border-radius:4px; font-size:12px; z-index:10; white-space:nowrap;
+  "></div>
+
+  <script>
+    let trackBounds = null;
+    let replayData = null;
+    let animationHandle = null;
+    let scanHandle = null;
+
+    let isPlaying = true;
+    let playbackSpeed = 1;
+    const step = 0.15;
+
+    let currentT = 0, minT = Infinity, maxT = -Infinity;
+    let pinnedDriver = null;
+    let hoveredDriver = null;
+    let listenersAttached = false;
+
+    let drivers = [];
+    let dots = {};
+    let cursors = {};
+
+    const svgNS = "http://www.w3.org/2000/svg";
+    const PADDING = 60;
+    const VIEW_W = 1400, VIEW_H = 800;
+
+    const TEAM_COLORS = {
+    "Red Bull Racing": "#3671C6",
+    "Ferrari": "#E8002D",
+    "Mercedes": "#00F5D0",
+    "McLaren": "#FF8000",
+    "Aston Martin": "#229971",
+    "Alpine": "#00A1E8",
+    "Williams": "#3267D4",
+    "Racing Bulls": "#6C98FF",
+    "Haas": "#E6002B",
+    "Audi": "#7A7E7F",
+    "Cadillac": "#AAAAAD"
+    };
+    function teamColor(team) {
+      return TEAM_COLORS[team] || "#e10600";
+    }
+
+    function transformPoint(x, y) {
+      const rangeX = trackBounds.max_x - trackBounds.min_x;
+      const rangeY = trackBounds.max_y - trackBounds.min_y;
+      const scale = Math.min(
+        (VIEW_W - PADDING * 2) / rangeX,
+        (VIEW_H - PADDING * 2) / rangeY
+      );
+      const px = PADDING + (x - trackBounds.min_x) * scale;
+      const py = VIEW_H - (PADDING + (y - trackBounds.min_y) * scale);
+      return [px, py];
+    }
+
+    async function loadTrackOutline() {
+      const res = await fetch('http://127.0.0.1:8000/track-outline');
+      const data = await res.json();
+      trackBounds = data.bounds;
+
+      const svg = document.getElementById('trackSvg');
+      svg.innerHTML = '';
+
+      const pathPoints = data.points.map(p => transformPoint(p.x, p.y));
+      const d = 'M ' + pathPoints.map(([x, y]) => `${x.toFixed(1)},${y.toFixed(1)}`).join(' L ');
+
+      const path = document.createElementNS(svgNS, 'path');
+      path.setAttribute('d', d);
+      path.setAttribute('stroke', '#555');
+      path.setAttribute('stroke-width', '4');
+      path.setAttribute('fill', 'none');
+      svg.appendChild(path);
+    }
+
+    async function loadReplay() {
+      if (animationHandle) clearInterval(animationHandle);
+      if (!trackBounds) await loadTrackOutline();
+
+      const startLap = document.getElementById('lapStartInput').value;
+      const endLap = document.getElementById('lapEndInput').value;
+      const res = await fetch(`http://127.0.0.1:8000/replay?start_lap=${startLap}&end_lap=${endLap}`);
+      replayData = await res.json();
+
+      if (replayData.error) {
+        alert(replayData.error);
+        return;
+      }
+
+      setupPlayback();
+    }
+
+    function setupPlayback() {
+      const svg = document.getElementById('trackSvg');
+      const tooltip = document.getElementById('tooltip');
+
+      svg.querySelectorAll('.car-dot').forEach(el => el.remove());
+      pinnedDriver = null;
+      hoveredDriver = null;
+      tooltip.style.display = 'none';
+
+      drivers = Object.keys(replayData.frames);
+      dots = {};
+      cursors = {};
+
+      drivers.forEach(drv => {
+        const info = replayData.driver_info[drv];
+        const dot = document.createElementNS(svgNS, 'circle');
+        dot.setAttribute('r', 8);
+        dot.setAttribute('fill', teamColor(info.team));
+        dot.setAttribute('stroke', '#fff');
+        dot.setAttribute('stroke-width', '1.5');
+        dot.setAttribute('class', 'car-dot');
+        svg.appendChild(dot);
+        dots[drv] = dot;
+        cursors[drv] = 0;
+      });
+
+      minT = Infinity; maxT = -Infinity;
+      drivers.forEach(drv => {
+        const frames = replayData.frames[drv];
+        if (frames.length === 0) return;
+        minT = Math.min(minT, frames[0].t);
+        maxT = Math.max(maxT, frames[frames.length - 1].t);
+      });
+      currentT = minT;
+      isPlaying = true;
+      document.getElementById('playPauseBtn').textContent = 'Pause';
+
+      if (!listenersAttached) {
+        svg.addEventListener('mousemove', handleSvgMouseMove);
+        svg.addEventListener('mouseleave', () => {
+          hoveredDriver = null;
+          if (!pinnedDriver) tooltip.style.display = 'none';
+        });
+        svg.addEventListener('click', handleSvgClick);
+        document.addEventListener('click', () => {
+          pinnedDriver = null;
+          tooltip.style.display = 'none';
+        });
+
+        const rewindBtn = document.getElementById('rewindBtn');
+        const forwardBtn = document.getElementById('forwardBtn');
+        rewindBtn.addEventListener('mousedown', (e) => { e.stopPropagation(); startScan(-1); });
+        forwardBtn.addEventListener('mousedown', (e) => { e.stopPropagation(); startScan(1); });
+        ['mouseup', 'mouseleave'].forEach(evt => {
+          rewindBtn.addEventListener(evt, stopScan);
+          forwardBtn.addEventListener(evt, stopScan);
+        });
+
+        listenersAttached = true;
+      }
+
+      const tickMs = 100;
+      animationHandle = setInterval(() => {
+        if (isPlaying) {
+          currentT += step * playbackSpeed;
+          if (currentT > maxT) currentT = maxT;
+        }
+        renderFrame();
+      }, tickMs);
+    }
+
+    function findCursor(frames, t) {
+      let lo = 0, hi = frames.length - 1, res = 0;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (frames[mid].t <= t) { res = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      return res;
+    }
+
+    function renderFrame() {
+      drivers.forEach(drv => {
+        const frames = replayData.frames[drv];
+        if (!frames || frames.length === 0) return;
+        const idx = findCursor(frames, currentT);
+        cursors[drv] = idx;
+        const frame = frames[idx];
+        const [px, py] = transformPoint(frame.x, frame.y);
+        dots[drv].setAttribute('cx', px);
+        dots[drv].setAttribute('cy', py);
+      });
+
+      renderLeaderboard();
+      if (pinnedDriver) updateTooltip(pinnedDriver);
+      else if (hoveredDriver) updateTooltip(hoveredDriver);
+    }
+
+    function handleSvgMouseMove(e) {
+      const svg = document.getElementById('trackSvg');
+      const pt = svg.createSVGPoint();
+      pt.x = e.clientX; pt.y = e.clientY;
+      const svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
+
+      let closest = null, closestDist = 16;
+      drivers.forEach(drv => {
+        const dot = dots[drv];
+        if (!dot) return;
+        const dx = svgPt.x - parseFloat(dot.getAttribute('cx'));
+        const dy = svgPt.y - parseFloat(dot.getAttribute('cy'));
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist < closestDist) { closestDist = dist; closest = drv; }
+      });
+
+      if (closest !== hoveredDriver) {
+        hoveredDriver = closest;
+        if (!pinnedDriver) {
+          if (hoveredDriver) updateTooltip(hoveredDriver);
+          else document.getElementById('tooltip').style.display = 'none';
+        }
+      } else if (hoveredDriver && !pinnedDriver) {
+        updateTooltip(hoveredDriver);
+      }
+    }
+
+    function handleSvgClick(e) {
+      e.stopPropagation();
+      const tooltip = document.getElementById('tooltip');
+      if (hoveredDriver) {
+        pinnedDriver = (pinnedDriver === hoveredDriver) ? null : hoveredDriver;
+        if (pinnedDriver) updateTooltip(pinnedDriver);
+        else tooltip.style.display = 'none';
+      } else {
+        pinnedDriver = null;
+        tooltip.style.display = 'none';
+      }
+    }
+
+    function updateTooltip(drv) {
+      const svg = document.getElementById('trackSvg');
+      const tooltip = document.getElementById('tooltip');
+      const info = replayData.driver_info[drv];
+      const frames = replayData.frames[drv];
+      const frame = frames[cursors[drv]];
+      if (!frame) return;
+
+      const gap = frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A');
+      const ahead = frame.driverAhead || 'Leader';
+
+      tooltip.innerHTML = `
+        <strong>${info.name}</strong> (${info.team})<br>
+        Lap: ${frame.lap ?? 'N/A'}<br>
+        Position: ${frame.position ?? 'N/A'}<br>
+        Tyre: ${frame.compound ?? 'N/A'}<br>
+        Gap to ${ahead}: ${gap}
+      `;
+
+      const dot = dots[drv];
+      const pt = svg.createSVGPoint();
+      pt.x = parseFloat(dot.getAttribute('cx'));
+      pt.y = parseFloat(dot.getAttribute('cy'));
+      const screenPt = pt.matrixTransform(svg.getScreenCTM());
+
+      tooltip.style.left = (screenPt.x + window.scrollX + 12) + 'px';
+      tooltip.style.top = (screenPt.y + window.scrollY - 10) + 'px';
+      tooltip.style.display = 'block';
+    }
+
+    function renderLeaderboard() {
+      const board = document.getElementById('leaderboard');
+      const rows = drivers
+        .map(drv => {
+          const info = replayData.driver_info[drv];
+          const frame = replayData.frames[drv][cursors[drv]];
+          return { drv, info, frame };
+        })
+        .filter(r => r.frame && r.frame.position != null)
+        .sort((a, b) => a.frame.position - b.frame.position);
+
+      board.innerHTML = rows.map(r => {
+        const gap = r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A');
+        return `
+          <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333;">
+            <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
+            <div style="width:20px; font-weight:bold;">${r.frame.position}</div>
+            <div style="flex:1;">
+              <div>${r.info.name}</div>
+              <div style="color:#999; font-size:11px;">Lap ${r.frame.lap} · ${r.frame.compound ?? ''} · ${gap}</div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function togglePlayPause() {
+      isPlaying = !isPlaying;
+      document.getElementById('playPauseBtn').textContent = isPlaying ? 'Pause' : 'Play';
+    }
+
+    function changeSpeed(delta) {
+      playbackSpeed = Math.max(0.5, Math.min(8, +(playbackSpeed + delta).toFixed(1)));
+      document.getElementById('speedLabel').textContent = playbackSpeed + 'x';
+    }
+
+    function startScan(direction) {
+      if (scanHandle) return;
+      scanHandle = setInterval(() => {
+        currentT += direction * step * 5 * playbackSpeed;
+        currentT = Math.max(minT, Math.min(maxT, currentT));
+        renderFrame();
+      }, 50);
+    }
+    function stopScan() {
+      clearInterval(scanHandle);
+      scanHandle = null;
     }
   </script>
 </body>

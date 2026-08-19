@@ -4,6 +4,7 @@ import fastf1
 import requests
 import numpy as np
 import json
+import pandas as pd
 
 app = FastAPI()
 
@@ -89,3 +90,77 @@ def get_telemetry(driver: str):
 def get_live_data(driver_number: int):
     r = requests.get('https://api.openf1.org/v1/car_data', params={'driver_number': driver_number, 'session_key': 'latest'})
     return r.json()[:20]
+
+@app.get("/track-outline")
+def get_track_outline():
+    session = get_cached_session()
+    fastest_lap = session.laps.pick_fastest()
+    tel = fastest_lap.get_telemetry()
+
+    xs = tel['X'].values
+    ys = tel['Y'].values
+
+    bounds = {
+        "min_x": float(xs.min()), "max_x": float(xs.max()),
+        "min_y": float(ys.min()), "max_y": float(ys.max()),
+    }
+    _session_cache['track_bounds'] = bounds
+
+    points = [{"x": float(x), "y": float(y)} for x, y in zip(xs, ys)]
+    return {"points": points, "bounds": bounds}
+
+
+@app.get("/replay")
+def get_replay(start_lap: int, end_lap: int):
+    session = get_cached_session()
+    laps = session.laps
+
+    if end_lap < start_lap:
+        start_lap, end_lap = end_lap, start_lap
+
+    driver_number_to_name = {}
+    for drv in session.drivers:
+        driver_number_to_name[drv] = session.get_driver(drv)['FullName']
+
+    driver_info = {}
+    frames_by_driver = {}
+
+    for drv in session.drivers:
+        info = session.get_driver(drv)
+        driver_info[drv] = {"name": info['FullName'], "team": info['TeamName']}
+
+        drv_laps = laps.pick_drivers(drv)
+        drv_laps = drv_laps[(drv_laps['LapNumber'] >= start_lap) & (drv_laps['LapNumber'] <= end_lap)]
+
+        frames = []
+        for _, lap in drv_laps.iterrows():
+            try:
+                telemetry = lap.get_telemetry()
+            except Exception:
+                continue
+
+            telemetry = telemetry.add_driver_ahead()
+            speed_ms = telemetry['Speed'] / 3.6
+            telemetry['GapToDriverAhead'] = telemetry['DistanceToDriverAhead'] / speed_ms.replace(0, np.nan)
+            telemetry['DriverAheadName'] = telemetry['DriverAhead'].map(driver_number_to_name)
+
+            lap_number = int(lap['LapNumber'])
+            position = lap['Position']
+            compound = lap['Compound']
+
+            for _, row in telemetry.iterrows():
+                frames.append({
+                    "t": row['SessionTime'].total_seconds(),
+                    "x": float(row['X']),
+                    "y": float(row['Y']),
+                    "lap": lap_number,
+                    "position": None if position is None or np.isnan(position) else int(position),
+                    "compound": compound,
+                    "gap": None if pd.isna(row['GapToDriverAhead']) else round(float(row['GapToDriverAhead']), 2),
+                    "driverAhead": row['DriverAheadName'] if isinstance(row['DriverAheadName'], str) else None,
+                })
+
+        frames.sort(key=lambda f: f['t'])
+        frames_by_driver[drv] = frames
+
+    return {"driver_info": driver_info, "frames": frames_by_driver}
