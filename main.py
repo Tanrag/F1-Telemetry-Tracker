@@ -126,43 +126,92 @@ def lap_at_time(frames, t):
     return frames[idx]['lap']
 
 
-def compute_lap_frames(drv, lap, driver_number_to_name):
-    lap_number = int(lap['LapNumber'])
-    key = (drv, lap_number)
-    if key in _lap_frame_cache:
-        return _lap_frame_cache[key]
+def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_name):
+    """
+    Fetch telemetry ONCE for every lap in missing_slice (instead of once per lap),
+    then split the merged result back into per-lap frame lists and populate
+    _lap_frame_cache for each lap number involved.
+    """
+    lap_numbers = sorted(int(n) for n in missing_slice['LapNumber'])
+    print(f"  bulk-computing driver {drv} laps {lap_numbers[0]}-{lap_numbers[-1]} "
+          f"({len(lap_numbers)} laps in a single telemetry call)")
 
-    print(f"  computing driver {drv} lap {lap_number}")
     try:
-        telemetry = lap.get_telemetry()
+        # Calling get_telemetry() on a Laps *slice* (multiple laps) computes
+        # telemetry once for the whole time span, instead of once per lap.
+        telemetry = missing_slice.get_telemetry()
     except Exception:
-        _lap_frame_cache[key] = []
-        return []
+        for lap_number in lap_numbers:
+            _lap_frame_cache[(drv, lap_number)] = []
+        return
+
+    if telemetry.empty:
+        for lap_number in lap_numbers:
+            _lap_frame_cache[(drv, lap_number)] = []
+        return
 
     telemetry = telemetry.add_driver_ahead()
     speed_ms = telemetry['Speed'] / 3.6
     telemetry['GapToDriverAhead'] = telemetry['DistanceToDriverAhead'] / speed_ms.replace(0, np.nan)
     telemetry['DriverAheadName'] = telemetry['DriverAhead'].map(driver_number_to_name)
 
-    position = lap['Position']
-    compound = lap['Compound']
+    # Recover per-row LapNumber/Position/Compound by matching each telemetry
+    # row to the most recent lap start time (asof merge = fast, vectorized).
+    lap_starts = missing_slice[['LapNumber', 'LapStartTime', 'Position', 'Compound']].sort_values('LapStartTime')
+    telemetry = telemetry.sort_values('SessionTime')
+    telemetry = pd.merge_asof(
+        telemetry, lap_starts,
+        left_on='SessionTime', right_on='LapStartTime',
+        direction='backward'
+    )
 
-    frames = []
-    for _, row in telemetry.iterrows():
+    telemetry['t'] = telemetry['SessionTime'].dt.total_seconds()
+    telemetry['gap_r'] = telemetry['GapToDriverAhead'].round(2)
+
+    by_lap = {lap_number: [] for lap_number in lap_numbers}
+    # to_dict('records') is much faster than iterrows() for building frames
+    for row in telemetry.to_dict('records'):
+        lap_number = row.get('LapNumber')
+        if lap_number is None or (isinstance(lap_number, float) and np.isnan(lap_number)):
+            continue
+        lap_number = int(lap_number)
+
+        pos = row['Position']
+        gap = row['gap_r']
         ahead_num = row['DriverAhead'] if row['DriverAhead'] else None
-        frames.append({
-            "t": row['SessionTime'].total_seconds(),
+
+        by_lap.setdefault(lap_number, []).append({
+            "t": row['t'],
             "x": float(row['X']),
             "y": float(row['Y']),
             "lap": lap_number,
-            "position": None if position is None or np.isnan(position) else int(position),
-            "compound": compound,
-            "gap": None if pd.isna(row['GapToDriverAhead']) else round(float(row['GapToDriverAhead']), 2),
+            "position": None if pd.isna(pos) else int(pos),
+            "compound": row['Compound'],
+            "gap": None if pd.isna(gap) else float(gap),
             "driverAhead": row['DriverAheadName'] if isinstance(row['DriverAheadName'], str) else None,
             "driverAheadNum": ahead_num,
         })
 
-    _lap_frame_cache[key] = frames
+    for lap_number, frames in by_lap.items():
+        _lap_frame_cache[(drv, lap_number)] = frames
+
+
+def compute_driver_frames(drv, drv_laps, driver_number_to_name):
+    """
+    Returns all frames for this driver across drv_laps, computing telemetry
+    in a single bulk call for whichever laps aren't already cached.
+    """
+    missing_slice = drv_laps[[
+        (drv, int(lap['LapNumber'])) not in _lap_frame_cache
+        for _, lap in drv_laps.iterrows()
+    ]]
+
+    if not missing_slice.empty:
+        _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_name)
+
+    frames = []
+    for _, lap in drv_laps.iterrows():
+        frames.extend(_lap_frame_cache.get((drv, int(lap['LapNumber'])), []))
     return frames
 
 
@@ -195,10 +244,7 @@ def get_replay(start_lap: int, end_lap: int):
 
         drv_laps = all_drv_laps[(all_drv_laps['LapNumber'] >= start_lap) & (all_drv_laps['LapNumber'] <= end_lap)]
 
-        frames = []
-        for _, lap in drv_laps.iterrows():
-            frames.extend(compute_lap_frames(drv, lap, driver_number_to_name))
-
+        frames = compute_driver_frames(drv, drv_laps, driver_number_to_name)
         frames.sort(key=lambda f: f['t'])
         frames_by_driver[drv] = frames
 

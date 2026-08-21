@@ -1,2 +1,5 @@
+Add Circuit Choice
+Optimize Loading Speeds
+Fix GUI Size
 Update GUI Further
 Fix Individual Driver Info GUI
