@@ -1,1 +1,3 @@
-hi
+Fix track size
+Fix Aston colors
+Optimize loading times

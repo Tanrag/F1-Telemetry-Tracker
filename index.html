@@ -131,7 +131,7 @@
 
     let isPlaying = true;
     let playbackSpeed = 1;
-    const step = 0.15;
+    const step = 0.1;
 
     let currentT = 0, minT = Infinity, maxT = -Infinity;
     let pinnedDriver = null;
@@ -357,7 +357,7 @@
       const frame = frames[cursors[drv]];
       if (!frame) return;
 
-      const gap = frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A');
+      const gap = frame.lapped ? 'LAPPED' : (frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A'));
       const ahead = frame.driverAhead || 'Leader';
 
       tooltip.innerHTML = `
@@ -391,7 +391,7 @@
         .sort((a, b) => a.frame.position - b.frame.position);
 
       board.innerHTML = rows.map(r => {
-        const gap = r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A');
+        const gap = r.frame.lapped ? 'LAPPED' : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
         return `
           <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333;">
             <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
