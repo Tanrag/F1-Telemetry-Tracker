@@ -188,11 +188,12 @@ def get_replay(start_lap: int, end_lap: int):
 
     for drv in session.drivers:
         info = session.get_driver(drv)
-        driver_info[drv] = {"name": info['FullName'], "team": info['TeamName']}
+        all_drv_laps = laps.pick_drivers(drv)
+        last_lap = int(all_drv_laps['LapNumber'].max()) if not all_drv_laps.empty else 0
+        driver_info[drv] = {"name": info['FullName'], "team": info['TeamName'], "lastLap": last_lap}
         print(f"Processing driver {drv} ({info['FullName']})...")
 
-        drv_laps = laps.pick_drivers(drv)
-        drv_laps = drv_laps[(drv_laps['LapNumber'] >= start_lap) & (drv_laps['LapNumber'] <= end_lap)]
+        drv_laps = all_drv_laps[(all_drv_laps['LapNumber'] >= start_lap) & (all_drv_laps['LapNumber'] <= end_lap)]
 
         frames = []
         for _, lap in drv_laps.iterrows():

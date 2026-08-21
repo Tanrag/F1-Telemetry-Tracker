@@ -17,12 +17,6 @@
 <body>
   <h1>F1 Telemetry Tracker</h1>
 
-  <input id="driverInput" placeholder="e.g. VER" value="VER">
-  <button onclick="loadTelemetry()">Load</button>
-  <p id="status"></p>
-
-  <div id="laps"></div>
-
   <script>
     async function loadTelemetry() {
       const driver = document.getElementById('driverInput').value;
@@ -96,7 +90,6 @@
     }
   </script>
 
-  <h2>Track Map Replay</h2>
   <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
     <label>Start Lap: <input id="lapStartInput" type="number" value="12" style="width:70px;"></label>
     <label>End Lap: <input id="lapEndInput" type="number" value="14" style="width:70px;"></label>
@@ -109,14 +102,22 @@
     <button onclick="changeSpeed(0.5)">+</button>
   </div>
   <br>
-  <div style="display:flex; gap:16px; align-items:flex-start; width:100%;">
-    <svg id="trackSvg" viewBox="0 0 1400 800"
-        style="background:#111; border-radius:8px; width:78%; height:auto; flex-shrink:0;"></svg>
+  <div style="display:flex; gap:16px; align-items:stretch; width:100%;">
+    <svg id="trackSvg" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet"
+        style="background:#111; border-radius:8px; width:78%; flex-shrink:0;"></svg>
     <div id="leaderboard" style="
       flex:1; min-width:220px; background:#111; color:#fff; border-radius:8px;
-      padding:10px; font-size:13px; max-height:800px; overflow-y:auto;
+      padding:10px; font-size:13px;
     "></div>
   </div>
+
+  <br>
+  <input id="driverInput" placeholder="e.g. VER" value="VER">
+  <button onclick="loadTelemetry()">Load</button>
+  <p id="status"></p>
+
+  <div id="laps"></div>
+
   <div id="tooltip" style="
     position:absolute; display:none; pointer-events:none;
     background:rgba(20,20,20,0.95); color:#fff; padding:6px 10px;
@@ -170,8 +171,13 @@
         (VIEW_W - PADDING * 2) / rangeX,
         (VIEW_H - PADDING * 2) / rangeY
       );
-      const px = PADDING + (x - trackBounds.min_x) * scale;
-      const py = VIEW_H - (PADDING + (y - trackBounds.min_y) * scale);
+      const scaledW = rangeX * scale;
+      const scaledH = rangeY * scale;
+      const offsetX = (VIEW_W - scaledW) / 2;
+      const offsetY = (VIEW_H - scaledH) / 2;
+
+      const px = offsetX + (x - trackBounds.min_x) * scale;
+      const py = VIEW_H - (offsetY + (y - trackBounds.min_y) * scale);
       return [px, py];
     }
 
@@ -229,8 +235,8 @@
         const dot = document.createElementNS(svgNS, 'circle');
         dot.setAttribute('r', 8);
         dot.setAttribute('fill', teamColor(info.team));
-        dot.setAttribute('stroke', '#fff');
-        dot.setAttribute('stroke-width', '1.5');
+        dot.setAttribute('stroke', '#000');
+        dot.setAttribute('stroke-width', '1');
         dot.setAttribute('class', 'car-dot');
         svg.appendChild(dot);
         dots[drv] = dot;
@@ -295,18 +301,36 @@
     function renderFrame() {
       drivers.forEach(drv => {
         const frames = replayData.frames[drv];
-        if (!frames || frames.length === 0) return;
-        const idx = findCursor(frames, currentT);
+        if (!frames || frames.length === 0) {
+          dots[drv].style.display = 'none';
+          dots[drv].dataset.out = '1';
+          return;
+        }
+        dots[drv].style.display = '';
+
+        const lastT = frames[frames.length - 1].t;
+        const isOut = currentT > lastT;
+        dots[drv].dataset.out = isOut ? '1' : '0';
+
+        const idx = findCursor(frames, Math.min(currentT, lastT));
         cursors[drv] = idx;
         const frame = frames[idx];
         const [px, py] = transformPoint(frame.x, frame.y);
         dots[drv].setAttribute('cx', px);
         dots[drv].setAttribute('cy', py);
+        dots[drv].style.opacity = isOut ? '0.35' : '1';
       });
 
       renderLeaderboard();
+      syncTrackHeight();
       if (pinnedDriver) updateTooltip(pinnedDriver);
       else if (hoveredDriver) updateTooltip(hoveredDriver);
+    }
+
+    function syncTrackHeight() {
+      const svg = document.getElementById('trackSvg');
+      const board = document.getElementById('leaderboard');
+      svg.style.height = board.offsetHeight + 'px';
     }
 
     function handleSvgMouseMove(e) {
@@ -356,16 +380,19 @@
       const frames = replayData.frames[drv];
       const frame = frames[cursors[drv]];
       if (!frame) return;
+      const isOut = dots[drv].dataset.out === '1';
 
-      const gap = frame.lapped ? 'LAPPED' : (frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A'));
+      const gap = isOut ? 'OUT'
+        : frame.lapped ? 'LAPPED'
+        : (frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A'));
       const ahead = frame.driverAhead || 'Leader';
 
       tooltip.innerHTML = `
         <strong>${info.name}</strong> (${info.team})<br>
-        Lap: ${frame.lap ?? 'N/A'}<br>
+        Lap: ${frame.lap ?? 'N/A'}${isOut ? ' (last known)' : ''}<br>
         Position: ${frame.position ?? 'N/A'}<br>
         Tyre: ${frame.compound ?? 'N/A'}<br>
-        Gap to ${ahead}: ${gap}
+        ${isOut ? 'Status: OUT' : `Gap to ${ahead}: ${gap}`}
       `;
 
       const dot = dots[drv];
@@ -381,17 +408,37 @@
 
     function renderLeaderboard() {
       const board = document.getElementById('leaderboard');
-      const rows = drivers
-        .map(drv => {
-          const info = replayData.driver_info[drv];
-          const frame = replayData.frames[drv][cursors[drv]];
-          return { drv, info, frame };
-        })
-        .filter(r => r.frame && r.frame.position != null)
-        .sort((a, b) => a.frame.position - b.frame.position);
+
+      const rows = drivers.map(drv => {
+        const info = replayData.driver_info[drv];
+        const frames = replayData.frames[drv];
+        const isOut = dots[drv].dataset.out === '1';
+        const frame = (frames && frames.length > 0) ? frames[cursors[drv]] : null;
+        return { drv, info, frame, isOut };
+      })
+      .filter(r => r.frame || r.isOut)
+      .sort((a, b) => {
+        if (a.isOut !== b.isOut) return a.isOut ? 1 : -1;
+        if (a.isOut) return (b.info.lastLap ?? 0) - (a.info.lastLap ?? 0);
+        return a.frame.position - b.frame.position;
+      });
 
       board.innerHTML = rows.map(r => {
-        const gap = r.frame.lapped ? 'LAPPED' : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
+        if (r.isOut) {
+          const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
+          return `
+            <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333; opacity:0.5;">
+              <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
+              <div style="width:20px; font-weight:bold;">–</div>
+              <div style="flex:1;">
+                <div>${r.info.name}</div>
+                <div style="color:#999; font-size:11px;">Last Lap ${lapLabel ?? '?'} · OUT</div>
+              </div>
+            </div>
+          `;
+        }
+        const gap = r.frame.lapped ? 'LAPPED'
+          : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
         return `
           <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333;">
             <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
