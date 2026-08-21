@@ -6,8 +6,66 @@ import numpy as np
 import json
 import pandas as pd
 import bisect
+from contextlib import asynccontextmanager
+import os
+from concurrent.futures import ThreadPoolExecutor
+import pickle
 
-app = FastAPI()
+CACHE_DIR = os.path.join(os.path.expanduser("~"), ".fastf1_cache")
+os.makedirs(CACHE_DIR, exist_ok=True)
+fastf1.Cache.enable_cache(CACHE_DIR)
+
+CACHE_FILE = os.path.join(CACHE_DIR, "lap_frame_cache.pkl")
+
+
+CACHE_SCHEMA_VERSION = 2
+
+def _load_lap_frame_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "rb") as f:
+            data = pickle.load(f)
+        if isinstance(data, dict) and data.get("_version") == CACHE_SCHEMA_VERSION:
+            return data["frames"]
+        print("Lap frame cache schema changed — discarding stale disk cache and recomputing.")
+    return {}
+
+
+def _save_lap_frame_cache():
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump({"_version": CACHE_SCHEMA_VERSION, "frames": _lap_frame_cache}, f)
+
+
+def _save_lap_frame_cache():
+    with open(CACHE_FILE, "wb") as f:
+        pickle.dump(_lap_frame_cache, f)
+
+
+_session_cache = {}
+_replay_cache = {}
+_lap_frame_cache = _load_lap_frame_cache()
+
+
+def get_cached_session():
+    if 'session' not in _session_cache:
+        session = fastf1.get_session(2026, 10, 'R')
+        session.load()
+        if len(session.drivers) == 0:
+            raise HTTPException(
+                status_code=503,
+                detail="FastF1 loaded this session with 0 drivers — the event/round is likely wrong or data isn't available yet."
+            )
+        _session_cache['session'] = session
+    return _session_cache['session']
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    get_cached_session()
+    yield
+    _save_lap_frame_cache()
+
+
+app = FastAPI(lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -15,13 +73,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-fastf1.Cache.enable_cache('cache')
-
-_session_cache = {}
-_replay_cache = {}
-_lap_frame_cache = {}  # (driver_number, lap_number) -> list of frame dicts
-
 
 def get_cached_session():
     if 'session' not in _session_cache:
@@ -127,27 +178,18 @@ def lap_at_time(frames, t):
 
 
 def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_name):
-    """
-    Fetch telemetry ONCE for every lap in missing_slice (instead of once per lap),
-    then split the merged result back into per-lap frame lists and populate
-    _lap_frame_cache for each lap number involved.
-    """
     lap_numbers = sorted(int(n) for n in missing_slice['LapNumber'])
     print(f"  bulk-computing driver {drv} laps {lap_numbers[0]}-{lap_numbers[-1]} "
           f"({len(lap_numbers)} laps in a single telemetry call)")
 
     try:
-        # Calling get_telemetry() on a Laps *slice* (multiple laps) computes
-        # telemetry once for the whole time span, instead of once per lap.
         telemetry = missing_slice.get_telemetry()
-    except Exception:
-        for lap_number in lap_numbers:
-            _lap_frame_cache[(drv, lap_number)] = []
-        return
-
-    if telemetry.empty:
-        for lap_number in lap_numbers:
-            _lap_frame_cache[(drv, lap_number)] = []
+        if telemetry.empty:
+            raise ValueError("bulk telemetry returned empty")
+    except Exception as e:
+        print(f"  WARNING: bulk fetch failed for driver {drv} laps {lap_numbers}: {e!r}")
+        print(f"  Falling back to per-lap fetch for driver {drv}...")
+        _fetch_laps_individually(drv, missing_slice, driver_number_to_name)
         return
 
     telemetry = telemetry.add_driver_ahead()
@@ -155,9 +197,8 @@ def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_n
     telemetry['GapToDriverAhead'] = telemetry['DistanceToDriverAhead'] / speed_ms.replace(0, np.nan)
     telemetry['DriverAheadName'] = telemetry['DriverAhead'].map(driver_number_to_name)
 
-    # Recover per-row LapNumber/Position/Compound by matching each telemetry
-    # row to the most recent lap start time (asof merge = fast, vectorized).
-    lap_starts = missing_slice[['LapNumber', 'LapStartTime', 'Position', 'Compound']].sort_values('LapStartTime')
+    lap_starts = missing_slice[['LapNumber', 'LapStartTime', 'Position', 'Compound', 'PitInTime', 'PitOutTime']].sort_values('LapStartTime').copy()
+    lap_starts['Position'] = lap_starts['Position'].ffill().bfill()
     telemetry = telemetry.sort_values('SessionTime')
     telemetry = pd.merge_asof(
         telemetry, lap_starts,
@@ -169,7 +210,6 @@ def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_n
     telemetry['gap_r'] = telemetry['GapToDriverAhead'].round(2)
 
     by_lap = {lap_number: [] for lap_number in lap_numbers}
-    # to_dict('records') is much faster than iterrows() for building frames
     for row in telemetry.to_dict('records'):
         lap_number = row.get('LapNumber')
         if lap_number is None or (isinstance(lap_number, float) and np.isnan(lap_number)):
@@ -179,6 +219,16 @@ def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_n
         pos = row['Position']
         gap = row['gap_r']
         ahead_num = row['DriverAhead'] if row['DriverAhead'] else None
+
+        row_time = row['SessionTime']
+        pit_in = row.get('PitInTime')
+        pit_out = row.get('PitOutTime')
+
+        in_pit = False
+        if pit_in is not None and not pd.isna(pit_in) and row_time >= pit_in:
+            in_pit = True
+        if pit_out is not None and not pd.isna(pit_out) and row_time <= pit_out:
+            in_pit = True
 
         by_lap.setdefault(lap_number, []).append({
             "t": row['t'],
@@ -190,17 +240,63 @@ def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_n
             "gap": None if pd.isna(gap) else float(gap),
             "driverAhead": row['DriverAheadName'] if isinstance(row['DriverAheadName'], str) else None,
             "driverAheadNum": ahead_num,
+            "inPit": bool(in_pit),
         })
 
     for lap_number, frames in by_lap.items():
         _lap_frame_cache[(drv, lap_number)] = frames
 
 
+def _fetch_laps_individually(drv, missing_slice, driver_number_to_name):
+    for _, lap in missing_slice.iterrows():
+        lap_number = int(lap['LapNumber'])
+        try:
+            telemetry = lap.get_telemetry()
+            if telemetry.empty:
+                raise ValueError("empty telemetry")
+        except Exception as e:
+            print(f"    driver {drv} lap {lap_number}: no usable telemetry ({e!r}) — leaving empty")
+            _lap_frame_cache[(drv, lap_number)] = []
+            continue
+
+        telemetry = telemetry.add_driver_ahead()
+        speed_ms = telemetry['Speed'] / 3.6
+        telemetry['GapToDriverAhead'] = telemetry['DistanceToDriverAhead'] / speed_ms.replace(0, np.nan)
+        telemetry['DriverAheadName'] = telemetry['DriverAhead'].map(driver_number_to_name)
+
+        position = lap['Position']
+        compound = lap['Compound']
+        pit_in = lap.get('PitInTime')
+        pit_out = lap.get('PitOutTime')
+
+        frames = []
+        for _, row in telemetry.iterrows():
+            ahead_num = row['DriverAhead'] if row['DriverAhead'] else None
+
+            row_time = row['SessionTime']
+            in_pit = False
+            if pit_in is not None and not pd.isna(pit_in) and row_time >= pit_in:
+                in_pit = True
+            if pit_out is not None and not pd.isna(pit_out) and row_time <= pit_out:
+                in_pit = True
+
+            frames.append({
+                "t": row_time.total_seconds(),
+                "x": float(row['X']),
+                "y": float(row['Y']),
+                "lap": lap_number,
+                "position": None if pd.isna(position) else int(position),
+                "compound": compound,
+                "gap": None if pd.isna(row['GapToDriverAhead']) else round(float(row['GapToDriverAhead']), 2),
+                "driverAhead": row['DriverAheadName'] if isinstance(row['DriverAheadName'], str) else None,
+                "driverAheadNum": ahead_num,
+                "inPit": bool(in_pit),
+            })
+        _lap_frame_cache[(drv, lap_number)] = frames
+        print(f"    driver {drv} lap {lap_number}: {len(frames)} frames recovered individually")
+
+
 def compute_driver_frames(drv, drv_laps, driver_number_to_name):
-    """
-    Returns all frames for this driver across drv_laps, computing telemetry
-    in a single bulk call for whichever laps aren't already cached.
-    """
     missing_slice = drv_laps[[
         (drv, int(lap['LapNumber'])) not in _lap_frame_cache
         for _, lap in drv_laps.iterrows()
@@ -228,30 +324,33 @@ def get_replay(start_lap: int, end_lap: int):
     session = get_cached_session()
     laps = session.laps
 
-    driver_number_to_name = {}
-    for drv in session.drivers:
-        driver_number_to_name[drv] = session.get_driver(drv)['FullName']
+    driver_number_to_name = {
+        drv: session.get_driver(drv)['FullName'] for drv in session.drivers
+    }
 
     driver_info = {}
-    frames_by_driver = {}
-
     for drv in session.drivers:
         info = session.get_driver(drv)
         all_drv_laps = laps.pick_drivers(drv)
         last_lap = int(all_drv_laps['LapNumber'].max()) if not all_drv_laps.empty else 0
         driver_info[drv] = {"name": info['FullName'], "team": info['TeamName'], "lastLap": last_lap}
-        print(f"Processing driver {drv} ({info['FullName']})...")
 
+    def process_driver(drv):
+        all_drv_laps = laps.pick_drivers(drv)
         drv_laps = all_drv_laps[(all_drv_laps['LapNumber'] >= start_lap) & (all_drv_laps['LapNumber'] <= end_lap)]
-
         frames = compute_driver_frames(drv, drv_laps, driver_number_to_name)
         frames.sort(key=lambda f: f['t'])
-        frames_by_driver[drv] = frames
+        return drv, frames
+
+    frames_by_driver = {}
+    with ThreadPoolExecutor(max_workers=min(22, len(session.drivers))) as pool:
+        for drv, frames in pool.map(process_driver, session.drivers):
+            frames_by_driver[drv] = frames
 
     for drv, frames in frames_by_driver.items():
         new_frames = []
         for f in frames:
-            f = dict(f)  # copy so we don't mutate the shared per-lap cache
+            f = dict(f) 
             ahead_num = f.pop("driverAheadNum")
             lapped = False
             if ahead_num and ahead_num in frames_by_driver:
@@ -268,3 +367,4 @@ def get_replay(start_lap: int, end_lap: int):
     _replay_cache[cache_key] = result
     print(f"Finished and cached replay for laps {start_lap}-{end_lap}")
     return result
+

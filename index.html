@@ -407,50 +407,51 @@
     }
 
     function renderLeaderboard() {
-      const board = document.getElementById('leaderboard');
+  const board = document.getElementById('leaderboard');
 
-      const rows = drivers.map(drv => {
-        const info = replayData.driver_info[drv];
-        const frames = replayData.frames[drv];
-        const isOut = dots[drv].dataset.out === '1';
-        const frame = (frames && frames.length > 0) ? frames[cursors[drv]] : null;
-        return { drv, info, frame, isOut };
-      })
-      .filter(r => r.frame || r.isOut)
-      .sort((a, b) => {
-        if (a.isOut !== b.isOut) return a.isOut ? 1 : -1;
-        if (a.isOut) return (b.info.lastLap ?? 0) - (a.info.lastLap ?? 0);
-        return a.frame.position - b.frame.position;
-      });
+  const rows = drivers.map(drv => {
+    const info = replayData.driver_info[drv];
+    const frames = replayData.frames[drv];
+    const isOut = dots[drv].dataset.out === '1';
+    const frame = (frames && frames.length > 0) ? frames[cursors[drv]] : null;
+    const pitTag = frame && frame.inPit ? 'IN PIT' : '—';
+    return { drv, info, frame, isOut, pitTag };
+  })
+  .filter(r => r.frame || r.isOut)
+  .sort((a, b) => {
+    if (a.isOut !== b.isOut) return a.isOut ? 1 : -1;
+    if (a.isOut) return (b.info.lastLap ?? 0) - (a.info.lastLap ?? 0);
+    return (a.frame.position ?? 999) - (b.frame.position ?? 999);
+  });
 
-      board.innerHTML = rows.map(r => {
-        if (r.isOut) {
-          const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
-          return `
-            <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333; opacity:0.5;">
-              <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
-              <div style="width:20px; font-weight:bold;">–</div>
-              <div style="flex:1;">
-                <div>${r.info.name}</div>
-                <div style="color:#999; font-size:11px;">Last Lap ${lapLabel ?? '?'} · OUT</div>
-              </div>
-            </div>
-          `;
-        }
-        const gap = r.frame.lapped ? 'LAPPED'
-          : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
-        return `
-          <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333;">
-            <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
-            <div style="width:20px; font-weight:bold;">${r.frame.position}</div>
-            <div style="flex:1;">
-              <div>${r.info.name}</div>
-              <div style="color:#999; font-size:11px;">Lap ${r.frame.lap} · ${r.frame.compound ?? ''} · ${gap}</div>
-            </div>
+  board.innerHTML = rows.map(r => {
+    if (r.isOut) {
+      const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
+      return `
+        <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333; opacity:0.5;">
+          <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
+          <div style="width:20px; font-weight:bold;">–</div>
+          <div style="flex:1;">
+            <div>${r.info.name}</div>
+            <div style="color:#999; font-size:11px;">Last Lap ${lapLabel ?? '?'} · OUT</div>
           </div>
-        `;
-      }).join('');
+        </div>
+      `;
     }
+    const gap = r.frame.lapped ? 'LAPPED'
+      : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
+    return `
+      <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333;">
+        <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
+        <div style="width:20px; font-weight:bold;">${r.frame.position ?? '-'}</div>
+        <div style="flex:1;">
+          <div>${r.info.name}</div>
+          <div style="color:#999; font-size:11px;">Lap ${r.frame.lap} · ${r.frame.compound ?? ''} · ${r.pitTag} · ${gap}</div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
 
     function togglePlayPause() {
       isPlaying = !isPlaying;
