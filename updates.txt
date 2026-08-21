@@ -1,3 +1,2 @@
-Fix track size
-Fix Aston colors
-Optimize loading times
+Update GUI Further
+Fix Individual Driver Info GUI
