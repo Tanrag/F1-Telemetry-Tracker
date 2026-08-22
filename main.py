@@ -18,7 +18,7 @@ fastf1.Cache.enable_cache(CACHE_DIR)
 
 CACHE_FILE = os.path.join(CACHE_DIR, "lap_frame_cache.pkl")
 
-CACHE_SCHEMA_VERSION = 4  # bumped: cache keys now include round number
+CACHE_SCHEMA_VERSION = 4 
 
 
 def _load_lap_frame_cache():
