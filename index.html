@@ -3,29 +3,125 @@
 <head>
   <title>F1 Telemetry Tracker</title>
   <style>
-    body { font-family: sans-serif; margin: 20px; }
+    body { font-family: sans-serif; margin: 20px; background:#0a0a0a; color:#eee; }
+    h1 { color:#fff; }
     .lap-header {
       background: #222; color: white; padding: 10px;
       cursor: pointer; margin-top: 10px; border-radius: 4px;
     }
-    .lap-info { padding: 10px; background: #f0f0f0; }
+    .lap-info { padding: 10px; background: #f0f0f0; color:#111; }
     table { border-collapse: collapse; width: 100%; margin-top: 5px; }
-    th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; font-size: 13px; }
+    th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; font-size: 13px; color:#eee; }
     .lap-content { display: none; }
+    select, input, button { font-size: 14px; padding: 4px 8px; }
   </style>
 </head>
 <body>
   <h1>F1 Telemetry Tracker</h1>
 
+  <div style="margin-bottom:8px;">
+    <label>Track: <select id="trackSelect" onchange="onTrackChange()"></select></label>
+  </div>
+
+  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    <label>Start Lap: <input id="lapStartInput" type="number" value="1" style="width:70px;"></label>
+    <label>End Lap: <input id="lapEndInput" type="number" value="4" style="width:70px;"></label>
+    <button onclick="loadReplay()">Load Replay</button>
+    <button id="playPauseBtn" onclick="togglePlayPause()">Pause</button>
+    <button id="rewindBtn">⏪</button>
+    <button id="forwardBtn">⏩</button>
+    <span>Speed: <span id="speedLabel">1x</span></span>
+    <button onclick="changeSpeed(-0.5)">-</button>
+    <button onclick="changeSpeed(0.5)">+</button>
+  </div>
+  <br>
+  <div style="display:flex; gap:16px; align-items:stretch; width:100%;">
+    <svg id="trackSvg" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet"
+        style="background:#111; border-radius:8px; width:78%; flex-shrink:0;"></svg>
+    <div id="leaderboard" style="
+      flex:1; min-width:220px; background:#111; color:#fff; border-radius:8px;
+      padding:10px; font-size:13px;
+    "></div>
+  </div>
+
+  <br>
+  <div>
+    <input id="driverInput" placeholder="e.g. VER" value="VER">
+    <button onclick="loadTelemetry()">Load</button>
+  </div>
+  <p id="status"></p>
+
+  <div id="laps"></div>
+
+  <div id="tooltip" style="
+    position:absolute; display:none; pointer-events:none;
+    background:rgba(20,20,20,0.95); color:#fff; padding:6px 10px;
+    border-radius:4px; font-size:12px; z-index:10; white-space:nowrap;
+  "></div>
+
   <script>
+    // ---------------------------------------------------------------------
+    // Track selection
+    // ---------------------------------------------------------------------
+    let currentRound = null;
+
+    async function loadEvents() {
+      const res = await fetch('http://127.0.0.1:8000/events');
+      const data = await res.json();
+      const select = document.getElementById('trackSelect');
+      select.innerHTML = '';
+
+      data.events.forEach(ev => {
+        const opt = document.createElement('option');
+        opt.value = ev.round;
+        opt.textContent = `${ev.name}${ev.completed ? '' : ' (not yet run)'}`;
+        if (!ev.completed) opt.disabled = true;
+        select.appendChild(opt);
+      });
+
+      const firstCompleted = data.events.find(ev => ev.completed);
+      if (firstCompleted) {
+        select.value = firstCompleted.round;
+        currentRound = firstCompleted.round;
+      }
+    }
+
+    function onTrackChange() {
+      currentRound = parseInt(document.getElementById('trackSelect').value, 10);
+
+      // reset everything that's tied to the previously selected track
+      trackBounds = null;
+      if (animationHandle) clearInterval(animationHandle);
+      if (scanHandle) clearInterval(scanHandle);
+      animationHandle = null;
+      scanHandle = null;
+      replayData = null;
+      pinnedDriver = null;
+      hoveredDriver = null;
+
+      const svg = document.getElementById('trackSvg');
+      svg.innerHTML = '';
+      document.getElementById('leaderboard').innerHTML = '';
+      document.getElementById('tooltip').style.display = 'none';
+      document.getElementById('laps').innerHTML = '';
+      document.getElementById('status').textContent = '';
+    }
+
+    window.addEventListener('DOMContentLoaded', loadEvents);
+
+    // ---------------------------------------------------------------------
+    // Individual driver telemetry table
+    // ---------------------------------------------------------------------
     async function loadTelemetry() {
+      if (!currentRound) { alert('Please select a track first.'); return; }
+
       const driver = document.getElementById('driverInput').value;
       const status = document.getElementById('status');
       const lapsDiv = document.getElementById('laps');
       lapsDiv.innerHTML = '';
       status.textContent = 'Loading... this may take a while.';
 
-      const res = await fetch(`http://127.0.0.1:8000/telemetry/${driver}`);
+      const res = await fetch(`http://127.0.0.1:8000/telemetry/${driver}?round=${currentRound}`);
       const data = await res.json();
       status.textContent = '';
 
@@ -88,43 +184,10 @@
         lapsDiv.appendChild(content);
       });
     }
-  </script>
 
-  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-    <label>Start Lap: <input id="lapStartInput" type="number" value="12" style="width:70px;"></label>
-    <label>End Lap: <input id="lapEndInput" type="number" value="14" style="width:70px;"></label>
-    <button onclick="loadReplay()">Load Replay</button>
-    <button id="playPauseBtn" onclick="togglePlayPause()">Pause</button>
-    <button id="rewindBtn">⏪</button>
-    <button id="forwardBtn">⏩</button>
-    <span>Speed: <span id="speedLabel">1x</span></span>
-    <button onclick="changeSpeed(-0.5)">-</button>
-    <button onclick="changeSpeed(0.5)">+</button>
-  </div>
-  <br>
-  <div style="display:flex; gap:16px; align-items:stretch; width:100%;">
-    <svg id="trackSvg" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet"
-        style="background:#111; border-radius:8px; width:78%; flex-shrink:0;"></svg>
-    <div id="leaderboard" style="
-      flex:1; min-width:220px; background:#111; color:#fff; border-radius:8px;
-      padding:10px; font-size:13px;
-    "></div>
-  </div>
-
-  <br>
-  <input id="driverInput" placeholder="e.g. VER" value="VER">
-  <button onclick="loadTelemetry()">Load</button>
-  <p id="status"></p>
-
-  <div id="laps"></div>
-
-  <div id="tooltip" style="
-    position:absolute; display:none; pointer-events:none;
-    background:rgba(20,20,20,0.95); color:#fff; padding:6px 10px;
-    border-radius:4px; font-size:12px; z-index:10; white-space:nowrap;
-  "></div>
-
-  <script>
+    // ---------------------------------------------------------------------
+    // Replay / track map
+    // ---------------------------------------------------------------------
     let trackBounds = null;
     let replayData = null;
     let animationHandle = null;
@@ -148,17 +211,17 @@
     const VIEW_W = 1400, VIEW_H = 800;
 
     const TEAM_COLORS = {
-    "Red Bull Racing": "#3671C6",
-    "Ferrari": "#E8002D",
-    "Mercedes": "#00F5D0",
-    "McLaren": "#FF8000",
-    "Aston Martin": "#229971",
-    "Alpine": "#00A1E8",
-    "Williams": "#3267D4",
-    "Racing Bulls": "#6C98FF",
-    "Haas": "#E6002B",
-    "Audi": "#7A7E7F",
-    "Cadillac": "#AAAAAD"
+      "Red Bull Racing": "#3671C6",
+      "Ferrari": "#E8002D",
+      "Mercedes": "#00F5D0",
+      "McLaren": "#FF8000",
+      "Aston Martin": "#229971",
+      "Alpine": "#00A1E8",
+      "Williams": "#3267D4",
+      "Racing Bulls": "#6C98FF",
+      "Haas": "#E6002B",
+      "Audi": "#7A7E7F",
+      "Cadillac": "#AAAAAD"
     };
     function teamColor(team) {
       return TEAM_COLORS[team] || "#e10600";
@@ -182,7 +245,7 @@
     }
 
     async function loadTrackOutline() {
-      const res = await fetch('http://127.0.0.1:8000/track-outline');
+      const res = await fetch(`http://127.0.0.1:8000/track-outline?round=${currentRound}`);
       const data = await res.json();
       trackBounds = data.bounds;
 
@@ -201,12 +264,14 @@
     }
 
     async function loadReplay() {
+      if (!currentRound) { alert('Please select a track first.'); return; }
+
       if (animationHandle) clearInterval(animationHandle);
       if (!trackBounds) await loadTrackOutline();
 
       const startLap = document.getElementById('lapStartInput').value;
       const endLap = document.getElementById('lapEndInput').value;
-      const res = await fetch(`http://127.0.0.1:8000/replay?start_lap=${startLap}&end_lap=${endLap}`);
+      const res = await fetch(`http://127.0.0.1:8000/replay?round=${currentRound}&start_lap=${startLap}&end_lap=${endLap}`);
       replayData = await res.json();
 
       if (replayData.error) {
@@ -387,10 +452,12 @@
         : (frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A'));
       const ahead = frame.driverAhead || 'Leader';
 
+      const posDisplay = frame.position ?? (info.gridPosition != null ? `${info.gridPosition}* (grid)` : 'N/A');
+
       tooltip.innerHTML = `
         <strong>${info.name}</strong> (${info.team})<br>
         Lap: ${frame.lap ?? 'N/A'}${isOut ? ' (last known)' : ''}<br>
-        Position: ${frame.position ?? 'N/A'}<br>
+        Position: ${posDisplay}<br>
         Tyre: ${frame.compound ?? 'N/A'}<br>
         ${isOut ? 'Status: OUT' : `Gap to ${ahead}: ${gap}`}
       `;
@@ -407,51 +474,64 @@
     }
 
     function renderLeaderboard() {
-  const board = document.getElementById('leaderboard');
+      const board = document.getElementById('leaderboard');
 
-  const rows = drivers.map(drv => {
-    const info = replayData.driver_info[drv];
-    const frames = replayData.frames[drv];
-    const isOut = dots[drv].dataset.out === '1';
-    const frame = (frames && frames.length > 0) ? frames[cursors[drv]] : null;
-    const pitTag = frame && frame.inPit ? 'IN PIT' : '—';
-    return { drv, info, frame, isOut, pitTag };
-  })
-  .filter(r => r.frame || r.isOut)
-  .sort((a, b) => {
-    if (a.isOut !== b.isOut) return a.isOut ? 1 : -1;
-    if (a.isOut) return (b.info.lastLap ?? 0) - (a.info.lastLap ?? 0);
-    return (a.frame.position ?? 999) - (b.frame.position ?? 999);
-  });
+      const rows = drivers.map(drv => {
+        const info = replayData.driver_info[drv];
+        const frames = replayData.frames[drv];
+        const isOut = dots[drv].dataset.out === '1';
+        const frame = (frames && frames.length > 0) ? frames[cursors[drv]] : null;
+        const pitTag = frame && frame.inPit ? 'IN PIT' : '—';
 
-  board.innerHTML = rows.map(r => {
-    if (r.isOut) {
-      const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
-      return `
-        <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333; opacity:0.5;">
-          <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
-          <div style="width:20px; font-weight:bold;">–</div>
-          <div style="flex:1;">
-            <div>${r.info.name}</div>
-            <div style="color:#999; font-size:11px;">Last Lap ${lapLabel ?? '?'} · OUT</div>
+        const livePos = frame ? frame.position : null;
+        const displayPos = livePos ?? info.gridPosition ?? null;
+        const sortPos = displayPos ?? 999;
+
+        return { drv, info, frame, isOut, pitTag, livePos, displayPos, sortPos };
+      })
+      .filter(r => r.frame || r.isOut)
+      .sort((a, b) => {
+        if (a.isOut !== b.isOut) return a.isOut ? 1 : -1;
+        if (a.isOut) return (b.info.lastLap ?? 0) - (a.info.lastLap ?? 0);
+        return a.sortPos - b.sortPos;
+      });
+
+      board.innerHTML = rows.map(r => {
+        if (r.isOut) {
+          const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
+          return `
+            <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333; opacity:0.5;">
+              <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
+              <div style="width:20px; font-weight:bold;">–</div>
+              <div style="flex:1;">
+                <div>${r.info.name}</div>
+                <div style="color:#999; font-size:11px;">Last Lap ${lapLabel ?? '?'} · OUT</div>
+              </div>
+            </div>
+          `;
+        }
+
+        const gap = r.frame.lapped ? 'LAPPED'
+          : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
+
+        const posLabel = r.livePos != null ? r.livePos
+          : (r.displayPos != null ? `${r.displayPos}*` : '?');
+        const posTitle = r.livePos == null
+          ? (r.displayPos != null ? 'Grid position — no live timing recorded' : 'No position data available')
+          : '';
+
+        return `
+          <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333;">
+            <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
+            <div style="width:20px; font-weight:bold;" title="${posTitle}">${posLabel}</div>
+            <div style="flex:1;">
+              <div>${r.info.name}</div>
+              <div style="color:#999; font-size:11px;">Lap ${r.frame.lap} · ${r.frame.compound ?? ''} · ${r.pitTag} · ${gap}</div>
+            </div>
           </div>
-        </div>
-      `;
+        `;
+      }).join('');
     }
-    const gap = r.frame.lapped ? 'LAPPED'
-      : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
-    return `
-      <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333;">
-        <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
-        <div style="width:20px; font-weight:bold;">${r.frame.position ?? '-'}</div>
-        <div style="flex:1;">
-          <div>${r.info.name}</div>
-          <div style="color:#999; font-size:11px;">Lap ${r.frame.lap} · ${r.frame.compound ?? ''} · ${r.pitTag} · ${gap}</div>
-        </div>
-      </div>
-    `;
-  }).join('');
-}
 
     function togglePlayPause() {
       isPlaying = !isPlaying;

@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 import fastf1
 import requests
@@ -8,6 +8,7 @@ import pandas as pd
 import bisect
 from contextlib import asynccontextmanager
 import os
+import threading
 from concurrent.futures import ThreadPoolExecutor
 import pickle
 
@@ -17,8 +18,8 @@ fastf1.Cache.enable_cache(CACHE_DIR)
 
 CACHE_FILE = os.path.join(CACHE_DIR, "lap_frame_cache.pkl")
 
+CACHE_SCHEMA_VERSION = 4  # bumped: cache keys now include round number
 
-CACHE_SCHEMA_VERSION = 2
 
 def _load_lap_frame_cache():
     if os.path.exists(CACHE_FILE):
@@ -35,32 +36,38 @@ def _save_lap_frame_cache():
         pickle.dump({"_version": CACHE_SCHEMA_VERSION, "frames": _lap_frame_cache}, f)
 
 
-def _save_lap_frame_cache():
-    with open(CACHE_FILE, "wb") as f:
-        pickle.dump(_lap_frame_cache, f)
+_session_cache = {}   # round_number -> Session
+_replay_cache = {}    # (round_number, start_lap, end_lap) -> result dict
+_lap_frame_cache = _load_lap_frame_cache()  # (round_number, drv, lap_number) -> frames
 
 
-_session_cache = {}
-_replay_cache = {}
-_lap_frame_cache = _load_lap_frame_cache()
-
-
-def get_cached_session():
-    if 'session' not in _session_cache:
-        session = fastf1.get_session(2026, 10, 'R')
+def get_cached_session(round_number: int):
+    if round_number not in _session_cache:
+        session = fastf1.get_session(2026, round_number, 'R')
         session.load()
         if len(session.drivers) == 0:
             raise HTTPException(
                 status_code=503,
-                detail="FastF1 loaded this session with 0 drivers — the event/round is likely wrong or data isn't available yet."
+                detail=f"FastF1 loaded round {round_number} with 0 drivers — "
+                       f"the event is likely wrong or data isn't available yet."
             )
-        _session_cache['session'] = session
-    return _session_cache['session']
+        _session_cache[round_number] = session
+
+        # warm this track's full-race replay cache in the background the
+        # first time it's ever requested, so subsequent range requests are fast
+        def prewarm():
+            total_laps = int(session.laps['LapNumber'].max())
+            print(f"Prewarming round {round_number}: laps 1-{total_laps}")
+            get_replay(round_number, 1, total_laps)
+            print(f"Round {round_number} prewarm complete.")
+
+        threading.Thread(target=prewarm, daemon=True).start()
+
+    return _session_cache[round_number]
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    get_cached_session()
     yield
     _save_lap_frame_cache()
 
@@ -74,22 +81,38 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-def get_cached_session():
-    if 'session' not in _session_cache:
-        session = fastf1.get_session(2026, 10, 'R')
-        session.load()
-        if len(session.drivers) == 0:
-            raise HTTPException(
-                status_code=503,
-                detail="FastF1 loaded this session with 0 drivers — the event/round is likely wrong or data isn't available yet."
-            )
-        _session_cache['session'] = session
-    return _session_cache['session']
+
+@app.get("/events")
+def get_events():
+    schedule = fastf1.get_event_schedule(2026)
+    schedule = schedule[schedule['RoundNumber'] > 0]  # exclude pre-season testing
+
+    now = pd.Timestamp.now()
+    events = []
+    for _, row in schedule.iterrows():
+        event_date = row.get('EventDate')
+        completed = False
+        date_str = None
+        if event_date is not None and not pd.isna(event_date):
+            date_str = str(event_date.date())
+            try:
+                completed = bool(event_date.tz_localize(None) < now) if event_date.tzinfo else bool(event_date < now)
+            except Exception:
+                completed = bool(event_date < now)
+
+        events.append({
+            "round": int(row['RoundNumber']),
+            "name": row['EventName'],
+            "location": row['Location'],
+            "date": date_str,
+            "completed": completed,
+        })
+    return {"events": events}
 
 
 @app.get("/telemetry/{driver}")
-def get_telemetry(driver: str):
-    session = get_cached_session()
+def get_telemetry(driver: str, round_number: int = Query(..., alias="round")):
+    session = get_cached_session(round_number)
     circuit_info = session.get_circuit_info()
     corners = circuit_info.corners
 
@@ -151,8 +174,8 @@ def get_live_data(driver_number: int):
 
 
 @app.get("/track-outline")
-def get_track_outline():
-    session = get_cached_session()
+def get_track_outline(round_number: int = Query(..., alias="round")):
+    session = get_cached_session(round_number)
     fastest_lap = session.laps.pick_fastest()
     tel = fastest_lap.get_telemetry()
 
@@ -163,7 +186,6 @@ def get_track_outline():
         "min_x": float(xs.min()), "max_x": float(xs.max()),
         "min_y": float(ys.min()), "max_y": float(ys.max()),
     }
-    _session_cache['track_bounds'] = bounds
 
     points = [{"x": float(x), "y": float(y)} for x, y in zip(xs, ys)]
     return {"points": points, "bounds": bounds}
@@ -177,9 +199,9 @@ def lap_at_time(frames, t):
     return frames[idx]['lap']
 
 
-def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_name):
+def _split_bulk_telemetry_into_lap_frames(round_number, drv, missing_slice, driver_number_to_name):
     lap_numbers = sorted(int(n) for n in missing_slice['LapNumber'])
-    print(f"  bulk-computing driver {drv} laps {lap_numbers[0]}-{lap_numbers[-1]} "
+    print(f"  bulk-computing round {round_number} driver {drv} laps {lap_numbers[0]}-{lap_numbers[-1]} "
           f"({len(lap_numbers)} laps in a single telemetry call)")
 
     try:
@@ -187,9 +209,9 @@ def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_n
         if telemetry.empty:
             raise ValueError("bulk telemetry returned empty")
     except Exception as e:
-        print(f"  WARNING: bulk fetch failed for driver {drv} laps {lap_numbers}: {e!r}")
+        print(f"  WARNING: bulk fetch failed for round {round_number} driver {drv} laps {lap_numbers}: {e!r}")
         print(f"  Falling back to per-lap fetch for driver {drv}...")
-        _fetch_laps_individually(drv, missing_slice, driver_number_to_name)
+        _fetch_laps_individually(round_number, drv, missing_slice, driver_number_to_name)
         return
 
     telemetry = telemetry.add_driver_ahead()
@@ -244,10 +266,10 @@ def _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_n
         })
 
     for lap_number, frames in by_lap.items():
-        _lap_frame_cache[(drv, lap_number)] = frames
+        _lap_frame_cache[(round_number, drv, lap_number)] = frames
 
 
-def _fetch_laps_individually(drv, missing_slice, driver_number_to_name):
+def _fetch_laps_individually(round_number, drv, missing_slice, driver_number_to_name):
     for _, lap in missing_slice.iterrows():
         lap_number = int(lap['LapNumber'])
         try:
@@ -255,8 +277,8 @@ def _fetch_laps_individually(drv, missing_slice, driver_number_to_name):
             if telemetry.empty:
                 raise ValueError("empty telemetry")
         except Exception as e:
-            print(f"    driver {drv} lap {lap_number}: no usable telemetry ({e!r}) — leaving empty")
-            _lap_frame_cache[(drv, lap_number)] = []
+            print(f"    round {round_number} driver {drv} lap {lap_number}: no usable telemetry ({e!r}) — leaving empty")
+            _lap_frame_cache[(round_number, drv, lap_number)] = []
             continue
 
         telemetry = telemetry.add_driver_ahead()
@@ -292,36 +314,36 @@ def _fetch_laps_individually(drv, missing_slice, driver_number_to_name):
                 "driverAheadNum": ahead_num,
                 "inPit": bool(in_pit),
             })
-        _lap_frame_cache[(drv, lap_number)] = frames
-        print(f"    driver {drv} lap {lap_number}: {len(frames)} frames recovered individually")
+        _lap_frame_cache[(round_number, drv, lap_number)] = frames
+        print(f"    round {round_number} driver {drv} lap {lap_number}: {len(frames)} frames recovered individually")
 
 
-def compute_driver_frames(drv, drv_laps, driver_number_to_name):
+def compute_driver_frames(round_number, drv, drv_laps, driver_number_to_name):
     missing_slice = drv_laps[[
-        (drv, int(lap['LapNumber'])) not in _lap_frame_cache
+        (round_number, drv, int(lap['LapNumber'])) not in _lap_frame_cache
         for _, lap in drv_laps.iterrows()
     ]]
 
     if not missing_slice.empty:
-        _split_bulk_telemetry_into_lap_frames(drv, missing_slice, driver_number_to_name)
+        _split_bulk_telemetry_into_lap_frames(round_number, drv, missing_slice, driver_number_to_name)
 
     frames = []
     for _, lap in drv_laps.iterrows():
-        frames.extend(_lap_frame_cache.get((drv, int(lap['LapNumber'])), []))
+        frames.extend(_lap_frame_cache.get((round_number, drv, int(lap['LapNumber'])), []))
     return frames
 
 
 @app.get("/replay")
-def get_replay(start_lap: int, end_lap: int):
+def get_replay(round_number: int = Query(..., alias="round"), start_lap: int = Query(...), end_lap: int = Query(...)):
     if end_lap < start_lap:
         start_lap, end_lap = end_lap, start_lap
 
-    cache_key = (start_lap, end_lap)
+    cache_key = (round_number, start_lap, end_lap)
     if cache_key in _replay_cache:
-        print(f"Serving cached replay for laps {start_lap}-{end_lap}")
+        print(f"Serving cached replay for round {round_number} laps {start_lap}-{end_lap}")
         return _replay_cache[cache_key]
 
-    session = get_cached_session()
+    session = get_cached_session(round_number)
     laps = session.laps
 
     driver_number_to_name = {
@@ -333,12 +355,24 @@ def get_replay(start_lap: int, end_lap: int):
         info = session.get_driver(drv)
         all_drv_laps = laps.pick_drivers(drv)
         last_lap = int(all_drv_laps['LapNumber'].max()) if not all_drv_laps.empty else 0
-        driver_info[drv] = {"name": info['FullName'], "team": info['TeamName'], "lastLap": last_lap}
+
+        grid_position = info.get('GridPosition') if hasattr(info, 'get') else None
+        if grid_position is not None and not pd.isna(grid_position):
+            grid_position = int(grid_position)
+        else:
+            grid_position = None
+
+        driver_info[drv] = {
+            "name": info['FullName'],
+            "team": info['TeamName'],
+            "lastLap": last_lap,
+            "gridPosition": grid_position,
+        }
 
     def process_driver(drv):
         all_drv_laps = laps.pick_drivers(drv)
         drv_laps = all_drv_laps[(all_drv_laps['LapNumber'] >= start_lap) & (all_drv_laps['LapNumber'] <= end_lap)]
-        frames = compute_driver_frames(drv, drv_laps, driver_number_to_name)
+        frames = compute_driver_frames(round_number, drv, drv_laps, driver_number_to_name)
         frames.sort(key=lambda f: f['t'])
         return drv, frames
 
@@ -350,7 +384,7 @@ def get_replay(start_lap: int, end_lap: int):
     for drv, frames in frames_by_driver.items():
         new_frames = []
         for f in frames:
-            f = dict(f) 
+            f = dict(f)
             ahead_num = f.pop("driverAheadNum")
             lapped = False
             if ahead_num and ahead_num in frames_by_driver:
@@ -365,6 +399,5 @@ def get_replay(start_lap: int, end_lap: int):
 
     result = {"driver_info": driver_info, "frames": frames_by_driver}
     _replay_cache[cache_key] = result
-    print(f"Finished and cached replay for laps {start_lap}-{end_lap}")
+    print(f"Finished and cached replay for round {round_number} laps {start_lap}-{end_lap}")
     return result
-
