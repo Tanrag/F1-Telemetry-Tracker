@@ -23,8 +23,16 @@ CACHE_SCHEMA_VERSION = 4
 
 def _load_lap_frame_cache():
     if os.path.exists(CACHE_FILE):
-        with open(CACHE_FILE, "rb") as f:
-            data = pickle.load(f)
+        try:
+            with open(CACHE_FILE, "rb") as f:
+                data = pickle.load(f)
+        except (EOFError, pickle.UnpicklingError, OSError) as e:
+            # File is empty/truncated/corrupt, most likely from an unclean
+            # shutdown that interrupted _save_lap_frame_cache(). Don't let a
+            # bad cache file take down the whole app on startup — just
+            # discard it and rebuild from scratch.
+            print(f"Lap frame cache file is corrupt or unreadable ({e!r}) — discarding and starting fresh.")
+            return {}
         if isinstance(data, dict) and data.get("_version") == CACHE_SCHEMA_VERSION:
             return data["frames"]
         print("Lap frame cache schema changed — discarding stale disk cache and recomputing.")
@@ -32,13 +40,30 @@ def _load_lap_frame_cache():
 
 
 def _save_lap_frame_cache():
-    with open(CACHE_FILE, "wb") as f:
+    # Write to a temp file and atomically replace the real cache file, so a
+    # crash or kill mid-write can never leave a truncated/corrupt pickle
+    # behind for the next startup to choke on.
+    tmp_path = CACHE_FILE + ".tmp"
+    with open(tmp_path, "wb") as f:
         pickle.dump({"_version": CACHE_SCHEMA_VERSION, "frames": _lap_frame_cache}, f)
+    os.replace(tmp_path, CACHE_FILE)
 
 
 _session_cache = {}   # round_number -> Session
 _replay_cache = {}    # (round_number, start_lap, end_lap) -> result dict
 _lap_frame_cache = _load_lap_frame_cache()  # (round_number, drv, lap_number) -> frames
+
+# Guards mutation of the two caches above. The background full-race prewarm
+# and a foreground /replay request can now run concurrently for the same
+# round, so dict reads/writes around "is this lap cached yet" need to be
+# consistent rather than racing each other.
+_cache_lock = threading.Lock()
+
+# Tracks which rounds already have a full-race background prewarm in
+# flight or completed, so we only ever kick one off per round instead of
+# spawning a new one on every /replay request.
+_warmed_rounds = set()
+_warmed_rounds_lock = threading.Lock()
 
 
 def get_cached_session(round_number: int):
@@ -52,16 +77,6 @@ def get_cached_session(round_number: int):
                        f"the event is likely wrong or data isn't available yet."
             )
         _session_cache[round_number] = session
-
-        # warm this track's full-race replay cache in the background the
-        # first time it's ever requested, so subsequent range requests are fast
-        def prewarm():
-            total_laps = int(session.laps['LapNumber'].max())
-            print(f"Prewarming round {round_number}: laps 1-{total_laps}")
-            get_replay(round_number, 1, total_laps)
-            print(f"Round {round_number} prewarm complete.")
-
-        threading.Thread(target=prewarm, daemon=True).start()
 
     return _session_cache[round_number]
 
@@ -319,17 +334,19 @@ def _fetch_laps_individually(round_number, drv, missing_slice, driver_number_to_
 
 
 def compute_driver_frames(round_number, drv, drv_laps, driver_number_to_name):
-    missing_slice = drv_laps[[
-        (round_number, drv, int(lap['LapNumber'])) not in _lap_frame_cache
-        for _, lap in drv_laps.iterrows()
-    ]]
+    with _cache_lock:
+        missing_slice = drv_laps[[
+            (round_number, drv, int(lap['LapNumber'])) not in _lap_frame_cache
+            for _, lap in drv_laps.iterrows()
+        ]]
 
     if not missing_slice.empty:
         _split_bulk_telemetry_into_lap_frames(round_number, drv, missing_slice, driver_number_to_name)
 
-    frames = []
-    for _, lap in drv_laps.iterrows():
-        frames.extend(_lap_frame_cache.get((round_number, drv, int(lap['LapNumber'])), []))
+    with _cache_lock:
+        frames = []
+        for _, lap in drv_laps.iterrows():
+            frames.extend(_lap_frame_cache.get((round_number, drv, int(lap['LapNumber'])), []))
     return frames
 
 

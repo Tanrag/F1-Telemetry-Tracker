@@ -3,17 +3,29 @@
 <head>
   <title>F1 Telemetry Tracker</title>
   <style>
-    body { font-family: sans-serif; margin: 20px; background:#0a0a0a; color:#eee; }
-    h1 { color:#fff; }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: #0a0a0a;
+    }
+    body { font-family: sans-serif; padding: 20px; color: #eee; }
+    h1 { color:#fff; margin-top:0; }
     .lap-header {
       background: #222; color: white; padding: 10px;
       cursor: pointer; margin-top: 10px; border-radius: 4px;
+      border: none;
     }
     .lap-info { padding: 10px; background: #f0f0f0; color:#111; }
     table { border-collapse: collapse; width: 100%; margin-top: 5px; }
-    th, td { border: 1px solid #ccc; padding: 4px 8px; text-align: right; font-size: 13px; color:#eee; }
+    th, td { border: 1px solid #333; padding: 4px 8px; text-align: right; font-size: 13px; color:#eee; }
     .lap-content { display: none; }
-    select, input, button { font-size: 14px; padding: 4px 8px; }
+    select, input, button {
+      font-size: 14px; padding: 4px 8px;
+      background:#1a1a1a; color:#eee; border:1px solid #333; border-radius:4px;
+    }
+    #trackSvg { display:block; border: none; outline: none; }
+    #leaderboard { border: none; }
   </style>
 </head>
 <body>
@@ -37,7 +49,7 @@
   <br>
   <div style="display:flex; gap:16px; align-items:stretch; width:100%;">
     <svg id="trackSvg" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet"
-        style="background:#111; border-radius:8px; width:78%; flex-shrink:0;"></svg>
+        style="background:#111; border-radius:8px; width:78%; flex-shrink:0; aspect-ratio: 1400 / 800; height:auto;"></svg>
     <div id="leaderboard" style="
       flex:1; min-width:220px; background:#111; color:#fff; border-radius:8px;
       padding:10px; font-size:13px;
@@ -66,11 +78,46 @@
     let currentRound = null;
 
     async function loadEvents() {
-      const res = await fetch('http://127.0.0.1:8000/events');
-      const data = await res.json();
       const select = document.getElementById('trackSelect');
-      select.innerHTML = '';
+      const status = document.getElementById('status');
+      select.innerHTML = '<option>Loading tracks…</option>';
 
+      let res;
+      try {
+        res = await fetch('http://127.0.0.1:8000/events');
+      } catch (err) {
+        // fetch() throws for network-level failures: server not running,
+        // CORS rejected, host unreachable (e.g. sandboxed iframe preview), etc.
+        select.innerHTML = '<option>Failed to load tracks</option>';
+        status.textContent = `Could not reach http://127.0.0.1:8000/events — is the backend running? (${err.message})`;
+        console.error('loadEvents fetch failed:', err);
+        return;
+      }
+
+      if (!res.ok) {
+        select.innerHTML = '<option>Failed to load tracks</option>';
+        status.textContent = `Backend responded with ${res.status} ${res.statusText}`;
+        console.error('loadEvents bad response:', res.status, res.statusText);
+        return;
+      }
+
+      let data;
+      try {
+        data = await res.json();
+      } catch (err) {
+        select.innerHTML = '<option>Failed to load tracks</option>';
+        status.textContent = 'Backend response was not valid JSON.';
+        console.error('loadEvents JSON parse failed:', err);
+        return;
+      }
+
+      if (!data.events || data.events.length === 0) {
+        select.innerHTML = '<option>No tracks available</option>';
+        status.textContent = 'Backend returned no events.';
+        return;
+      }
+
+      select.innerHTML = '';
       data.events.forEach(ev => {
         const opt = document.createElement('option');
         opt.value = ev.round;
@@ -84,6 +131,7 @@
         select.value = firstCompleted.round;
         currentRound = firstCompleted.round;
       }
+      status.textContent = '';
     }
 
     function onTrackChange() {
