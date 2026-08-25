@@ -1,80 +1,503 @@
 <!DOCTYPE html>
 <html>
 <head>
+  <meta charset="UTF-8">
   <title>F1 Telemetry Tracker</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Semi+Condensed:wght@500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
   <style>
+    :root {
+      --bg: #060606;
+      --panel: #111111;
+      --ink: #f2f2f2;
+      --muted: #8b8b91;
+      --line: #232327;
+      --accent: #E10600;
+      --accent-bright: #ff2a1f;
+      --display: 'Barlow Semi Condensed', sans-serif;
+      --mono: 'JetBrains Mono', monospace;
+    }
+
     * { box-sizing: border-box; }
+
     html, body {
       margin: 0;
       padding: 0;
-      background: #0a0a0a;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--display);
+      position: relative;
     }
-    body { font-family: sans-serif; padding: 20px; color: #eee; }
-    h1 { color:#fff; margin-top:0; }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      opacity: 0.75;
+      mix-blend-mode: screen;
+      background-repeat: repeat;
+      background-size: 560px 560px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='560' height='560' viewBox='0 0 560 560'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='1.3' stroke-linecap='round'%3E%3Cpath d='M-40 90 C 60 10, 140 170, 240 90 S 420 10, 520 90 S 660 170, 720 90'/%3E%3Cpath d='M-40 300 C 40 380, 140 220, 220 300 S 380 380, 460 300 S 600 220, 680 300'/%3E%3Cpath d='M420 -40 C 500 40, 380 120, 460 200 C 520 260, 440 320, 500 400 C 540 450, 480 500, 520 560'/%3E%3Cpath d='M80 420 C 40 470, 120 500, 90 560'/%3E%3Cpath d='M300 40 C 260 -10, 340 0, 300 -40'/%3E%3C/g%3E%3C/svg%3E");
+    }
+
+    .dashboard-viewport,
+    .telemetry-section {
+      position: relative;
+      z-index: 1;
+    }
+
+    button:focus-visible, select:focus-visible, input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .dashboard-viewport {
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .topbar {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 10px;
+      padding: 18px 20px 10px;
+      flex-shrink: 0;
+      text-align: center;
+    }
+
+    .brand {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+    }
+
+    .brand-mark {
+      color: var(--accent);
+      font-size: 13px;
+      line-height: 1;
+    }
+
+    .brand h1 {
+      font-family: var(--display);
+      font-weight: 800;
+      font-size: 21px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin: 0;
+      color: #fff;
+    }
+
+    .brand-sub {
+      font-family: var(--mono);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      width: 100%;
+      max-width: 900px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 14px;
+    }
+
+    .toolbar-group {
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+    }
+
+    .toolbar-divider {
+      width: 1px;
+      align-self: stretch;
+      background: var(--line);
+      margin: 2px 0;
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 3px;
+    }
+
+    .field-label {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.09em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: center;
+    }
+
+    .field select, .field input {
+      background: var(--bg);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      border-radius: 5px;
+      padding: 6px 9px;
+      font-family: var(--mono);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .field-narrow input { width: 58px; }
+
+    .btn {
+      font-family: var(--display);
+      font-weight: 700;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      font-size: 11px;
+      padding: 8px 16px;
+      border-radius: 5px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--ink);
+      cursor: pointer;
+      transition: border-color .15s ease, background .15s ease, color .15s ease;
+    }
+
+    .btn:hover { border-color: var(--accent); color: #fff; }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .btn-primary:hover { background: var(--accent-bright); border-color: var(--accent-bright); }
+
+    .btn-icon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--mono);
+      font-size: 13px;
+      padding: 7px 11px;
+      border-radius: 5px;
+      border: 1px solid var(--line);
+      background: var(--bg);
+      color: var(--ink);
+      cursor: pointer;
+      transition: border-color .15s ease, color .15s ease;
+    }
+
+    .btn-icon svg { display: block; }
+
+    .btn-icon:hover { border-color: var(--accent); color: var(--accent); }
+
+    .speed-control {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .speed-control span {
+      min-width: 28px;
+      text-align: center;
+      color: var(--ink);
+    }
+
+    .accent-line {
+      height: 2px;
+      width: 140px;
+      flex-shrink: 0;
+      background: var(--accent);
+      margin: 12px auto 0;
+    }
+
+    .dashboard {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: flex;
+      gap: 14px;
+      padding: 12px 20px 16px;
+    }
+
+    #trackSvg {
+      background: #111;
+      border-radius: 8px;
+      width: 78%;
+      flex-shrink: 0;
+      height: 100%;
+      display: block;
+    }
+
+    .leaderboard {
+      flex: 1;
+      min-width: 220px;
+      min-height: 0;
+      height: 100%;
+      background: #111;
+      border-radius: 8px;
+      padding: 6px 8px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .lb-row {
+      flex: 1 1 0;
+      min-height: 0;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 4px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .lb-row:last-child { border-bottom: none; }
+
+    .lb-row--out { opacity: .42; }
+
+    .lb-tab {
+      width: 3px;
+      align-self: stretch;
+      margin: 5px 0;
+      border-radius: 2px;
+      flex-shrink: 0;
+    }
+
+    .lb-pos {
+      font-family: var(--mono);
+      font-weight: 700;
+      font-size: 11px;
+      color: #fff;
+      background: #000;
+      border-left: 2px solid var(--accent);
+      min-width: 22px;
+      text-align: center;
+      padding: 2px 3px;
+      flex-shrink: 0;
+      border-radius: 2px;
+      line-height: 1.4;
+    }
+
+    .lb-name {
+      font-family: var(--display);
+      font-weight: 600;
+      font-size: 12px;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      flex-shrink: 1;
+    }
+
+    .lb-meta {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--muted);
+      white-space: nowrap;
+      margin-left: auto;
+      flex-shrink: 0;
+      padding-left: 8px;
+    }
+
+    .telemetry-section {
+      padding: 20px;
+      border-top: 1px solid var(--line);
+      text-align: center;
+    }
+
+    .telemetry-controls {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .telemetry-controls input {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      border-radius: 5px;
+      padding: 7px 10px;
+      font-family: var(--mono);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    .status {
+      font-family: var(--mono);
+      font-size: 12px;
+      color: var(--muted);
+      margin: 10px 0 0;
+      text-align: center;
+    }
+
     .lap-header {
-      background: #222; color: white; padding: 10px;
-      cursor: pointer; margin-top: 10px; border-radius: 4px;
-      border: none;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      padding: 10px 14px;
+      cursor: pointer;
+      margin-top: 10px;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 12px;
+      text-align: center;
+      transition: border-color .15s ease;
     }
-    .lap-info { padding: 10px; background: #f0f0f0; color:#111; }
-    table { border-collapse: collapse; width: 100%; margin-top: 5px; }
-    th, td { border: 1px solid #333; padding: 4px 8px; text-align: right; font-size: 13px; color:#eee; }
+
+    .lap-header:hover { border-color: var(--accent); }
+
     .lap-content { display: none; }
-    select, input, button {
-      font-size: 14px; padding: 4px 8px;
-      background:#1a1a1a; color:#eee; border:1px solid #333; border-radius:4px;
+
+    .lap-info {
+      padding: 10px 14px;
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-top: none;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      text-align: center;
+      border-radius: 0 0 6px 6px;
     }
-    #trackSvg { display:block; border: none; outline: none; }
-    #leaderboard { border: none; }
+
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-top: 5px;
+      font-family: var(--mono);
+    }
+
+    th, td {
+      border: 1px solid var(--line);
+      padding: 5px 8px;
+      text-align: right;
+      font-size: 11px;
+      color: var(--ink);
+    }
+
+    th {
+      color: var(--muted);
+      font-weight: 500;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+      font-size: 10px;
+      background: var(--panel);
+    }
+
+    .tooltip {
+      position: absolute;
+      display: none;
+      pointer-events: none;
+      background: rgba(10, 10, 10, 0.97);
+      border: 1px solid var(--line);
+      color: #fff;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.5;
+      z-index: 10;
+      white-space: nowrap;
+    }
+
+    .tooltip strong {
+      font-family: var(--display);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    @media (max-width: 900px) {
+      .dashboard-viewport { height: auto; }
+      .dashboard { flex-direction: column; }
+      #trackSvg { width: 100%; height: 300px; }
+      .leaderboard { height: 400px; }
+    }
   </style>
 </head>
 <body>
-  <h1>F1 Telemetry Tracker</h1>
 
-  <div style="margin-bottom:8px;">
-    <label>Track: <select id="trackSelect" onchange="onTrackChange()"></select></label>
+  <div class="dashboard-viewport">
+    <div class="topbar">
+      <div class="brand">
+        <span class="brand-mark">●</span>
+        <h1>F1 Telemetry</h1>
+        <span class="brand-sub">Race Replay &amp; Data</span>
+      </div>
+
+      <div class="toolbar">
+        <div class="toolbar-group">
+          <label class="field">
+            <span class="field-label">Track</span>
+            <select id="trackSelect" onchange="onTrackChange()"></select>
+          </label>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <div class="toolbar-group">
+          <label class="field field-narrow">
+            <span class="field-label">Start Lap</span>
+            <input id="lapStartInput" type="number" value="1">
+          </label>
+          <label class="field field-narrow">
+            <span class="field-label">End Lap</span>
+            <input id="lapEndInput" type="number" value="4">
+          </label>
+          <button class="btn btn-primary" onclick="loadReplay()">Load Replay</button>
+        </div>
+
+        <div class="toolbar-divider"></div>
+
+        <div class="toolbar-group">
+          <button class="btn-icon" id="rewindBtn" title="Scan back" aria-label="Scan back">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M11 19V5l-9 7 9 7zm10 0V5l-9 7 9 7z"/></svg>
+          </button>
+          <button class="btn-icon" id="playPauseBtn" onclick="togglePlayPause()">Pause</button>
+          <button class="btn-icon" id="forwardBtn" title="Scan forward" aria-label="Scan forward">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M13 5v14l9-7-9-7zM3 5v14l9-7-9-7z"/></svg>
+          </button>
+          <div class="speed-control">
+            <button class="btn-icon" onclick="changeSpeed(-0.5)">–</button>
+            <span id="speedLabel">1x</span>
+            <button class="btn-icon" onclick="changeSpeed(0.5)">+</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="accent-line"></div>
+
+    <main class="dashboard">
+      <svg id="trackSvg" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet"></svg>
+      <div id="leaderboard" class="leaderboard"></div>
+    </main>
   </div>
 
-  <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
-    <label>Start Lap: <input id="lapStartInput" type="number" value="1" style="width:70px;"></label>
-    <label>End Lap: <input id="lapEndInput" type="number" value="4" style="width:70px;"></label>
-    <button onclick="loadReplay()">Load Replay</button>
-    <button id="playPauseBtn" onclick="togglePlayPause()">Pause</button>
-    <button id="rewindBtn">⏪</button>
-    <button id="forwardBtn">⏩</button>
-    <span>Speed: <span id="speedLabel">1x</span></span>
-    <button onclick="changeSpeed(-0.5)">-</button>
-    <button onclick="changeSpeed(0.5)">+</button>
-  </div>
-  <br>
-  <div style="display:flex; gap:16px; align-items:stretch; width:100%;">
-    <svg id="trackSvg" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet"
-        style="background:#111; border-radius:8px; width:78%; flex-shrink:0; aspect-ratio: 1400 / 800; height:auto;"></svg>
-    <div id="leaderboard" style="
-      flex:1; min-width:220px; background:#111; color:#fff; border-radius:8px;
-      padding:10px; font-size:13px;
-    "></div>
-  </div>
+  <section class="telemetry-section">
+    <div class="telemetry-controls">
+      <input id="driverInput" placeholder="e.g. VER" value="VER">
+      <button class="btn btn-primary" onclick="loadTelemetry()">Load Telemetry</button>
+    </div>
+    <p id="status" class="status"></p>
+    <div id="laps"></div>
+  </section>
 
-  <br>
-  <div>
-    <input id="driverInput" placeholder="e.g. VER" value="VER">
-    <button onclick="loadTelemetry()">Load</button>
-  </div>
-  <p id="status"></p>
-
-  <div id="laps"></div>
-
-  <div id="tooltip" style="
-    position:absolute; display:none; pointer-events:none;
-    background:rgba(20,20,20,0.95); color:#fff; padding:6px 10px;
-    border-radius:4px; font-size:12px; z-index:10; white-space:nowrap;
-  "></div>
+  <div id="tooltip" class="tooltip"></div>
 
   <script>
-    // ---------------------------------------------------------------------
-    // Track selection
-    // ---------------------------------------------------------------------
     let currentRound = null;
 
     async function loadEvents() {
@@ -86,8 +509,6 @@
       try {
         res = await fetch('http://127.0.0.1:8000/events');
       } catch (err) {
-        // fetch() throws for network-level failures: server not running,
-        // CORS rejected, host unreachable (e.g. sandboxed iframe preview), etc.
         select.innerHTML = '<option>Failed to load tracks</option>';
         status.textContent = `Could not reach http://127.0.0.1:8000/events — is the backend running? (${err.message})`;
         console.error('loadEvents fetch failed:', err);
@@ -137,7 +558,6 @@
     function onTrackChange() {
       currentRound = parseInt(document.getElementById('trackSelect').value, 10);
 
-      // reset everything that's tied to the previously selected track
       trackBounds = null;
       if (animationHandle) clearInterval(animationHandle);
       if (scanHandle) clearInterval(scanHandle);
@@ -157,9 +577,6 @@
 
     window.addEventListener('DOMContentLoaded', loadEvents);
 
-    // ---------------------------------------------------------------------
-    // Individual driver telemetry table
-    // ---------------------------------------------------------------------
     async function loadTelemetry() {
       if (!currentRound) { alert('Please select a track first.'); return; }
 
@@ -233,9 +650,6 @@
       });
     }
 
-    // ---------------------------------------------------------------------
-    // Replay / track map
-    // ---------------------------------------------------------------------
     let trackBounds = null;
     let replayData = null;
     let animationHandle = null;
@@ -435,15 +849,8 @@
       });
 
       renderLeaderboard();
-      syncTrackHeight();
       if (pinnedDriver) updateTooltip(pinnedDriver);
       else if (hoveredDriver) updateTooltip(hoveredDriver);
-    }
-
-    function syncTrackHeight() {
-      const svg = document.getElementById('trackSvg');
-      const board = document.getElementById('leaderboard');
-      svg.style.height = board.offsetHeight + 'px';
     }
 
     function handleSvgMouseMove(e) {
@@ -529,7 +936,7 @@
         const frames = replayData.frames[drv];
         const isOut = dots[drv].dataset.out === '1';
         const frame = (frames && frames.length > 0) ? frames[cursors[drv]] : null;
-        const pitTag = frame && frame.inPit ? 'IN PIT' : '—';
+        const pitTag = frame && frame.inPit ? 'PIT' : '';
 
         const livePos = frame ? frame.position : null;
         const displayPos = livePos ?? info.gridPosition ?? null;
@@ -548,18 +955,16 @@
         if (r.isOut) {
           const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
           return `
-            <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333; opacity:0.5;">
-              <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
-              <div style="width:20px; font-weight:bold;">–</div>
-              <div style="flex:1;">
-                <div>${r.info.name}</div>
-                <div style="color:#999; font-size:11px;">Last Lap ${lapLabel ?? '?'} · OUT</div>
-              </div>
+            <div class="lb-row lb-row--out">
+              <span class="lb-tab" style="background:${teamColor(r.info.team)}"></span>
+              <span class="lb-pos">–</span>
+              <span class="lb-name">${r.info.name}</span>
+              <span class="lb-meta">OUT · L${lapLabel ?? '?'}</span>
             </div>
           `;
         }
 
-        const gap = r.frame.lapped ? 'LAPPED'
+        const gap = r.frame.lapped ? 'LAP'
           : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
 
         const posLabel = r.livePos != null ? r.livePos
@@ -569,13 +974,11 @@
           : '';
 
         return `
-          <div style="display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #333;">
-            <div style="width:4px; height:20px; background:${teamColor(r.info.team)};"></div>
-            <div style="width:20px; font-weight:bold;" title="${posTitle}">${posLabel}</div>
-            <div style="flex:1;">
-              <div>${r.info.name}</div>
-              <div style="color:#999; font-size:11px;">Lap ${r.frame.lap} · ${r.frame.compound ?? ''} · ${r.pitTag} · ${gap}</div>
-            </div>
+          <div class="lb-row">
+            <span class="lb-tab" style="background:${teamColor(r.info.team)}"></span>
+            <span class="lb-pos" title="${posTitle}">${posLabel}</span>
+            <span class="lb-name">${r.info.name}</span>
+            <span class="lb-meta">L${r.frame.lap} · ${r.frame.compound ?? ''}${r.pitTag ? ' · ' + r.pitTag : ''} · ${gap}</span>
           </div>
         `;
       }).join('');
