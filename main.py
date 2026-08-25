@@ -26,12 +26,12 @@ def _load_lap_frame_cache():
         try:
             with open(CACHE_FILE, "rb") as f:
                 data = pickle.load(f)
-        except (EOFError, pickle.UnpicklingError, OSError) as e:
-            # File is empty/truncated/corrupt, most likely from an unclean
-            # shutdown that interrupted _save_lap_frame_cache(). Don't let a
-            # bad cache file take down the whole app on startup — just
-            # discard it and rebuild from scratch.
+        except Exception as e:
             print(f"Lap frame cache file is corrupt or unreadable ({e!r}) — discarding and starting fresh.")
+            try:
+                os.remove(CACHE_FILE)
+            except OSError:
+                pass
             return {}
         if isinstance(data, dict) and data.get("_version") == CACHE_SCHEMA_VERSION:
             return data["frames"]
@@ -40,28 +40,18 @@ def _load_lap_frame_cache():
 
 
 def _save_lap_frame_cache():
-    # Write to a temp file and atomically replace the real cache file, so a
-    # crash or kill mid-write can never leave a truncated/corrupt pickle
-    # behind for the next startup to choke on.
     tmp_path = CACHE_FILE + ".tmp"
     with open(tmp_path, "wb") as f:
         pickle.dump({"_version": CACHE_SCHEMA_VERSION, "frames": _lap_frame_cache}, f)
     os.replace(tmp_path, CACHE_FILE)
 
 
-_session_cache = {}   # round_number -> Session
-_replay_cache = {}    # (round_number, start_lap, end_lap) -> result dict
-_lap_frame_cache = _load_lap_frame_cache()  # (round_number, drv, lap_number) -> frames
+_session_cache = {}
+_replay_cache = {}
+_lap_frame_cache = _load_lap_frame_cache()
 
-# Guards mutation of the two caches above. The background full-race prewarm
-# and a foreground /replay request can now run concurrently for the same
-# round, so dict reads/writes around "is this lap cached yet" need to be
-# consistent rather than racing each other.
 _cache_lock = threading.Lock()
 
-# Tracks which rounds already have a full-race background prewarm in
-# flight or completed, so we only ever kick one off per round instead of
-# spawning a new one on every /replay request.
 _warmed_rounds = set()
 _warmed_rounds_lock = threading.Lock()
 
@@ -97,10 +87,23 @@ app.add_middleware(
 )
 
 
+_events_cache = None
+_events_cache_lock = threading.Lock()
+
+
 @app.get("/events")
 def get_events():
-    schedule = fastf1.get_event_schedule(2026)
-    schedule = schedule[schedule['RoundNumber'] > 0]  # exclude pre-season testing
+    global _events_cache
+    with _events_cache_lock:
+        if _events_cache is not None:
+            return _events_cache
+
+    try:
+        schedule = fastf1.get_event_schedule(2026)
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Could not fetch event schedule: {e!r}")
+
+    schedule = schedule[schedule['RoundNumber'] > 0]
 
     now = pd.Timestamp.now()
     events = []
@@ -122,7 +125,11 @@ def get_events():
             "date": date_str,
             "completed": completed,
         })
-    return {"events": events}
+
+    result = {"events": events}
+    with _events_cache_lock:
+        _events_cache = result
+    return result
 
 
 @app.get("/telemetry/{driver}")
@@ -350,15 +357,17 @@ def compute_driver_frames(round_number, drv, drv_laps, driver_number_to_name):
     return frames
 
 
-@app.get("/replay")
-def get_replay(round_number: int = Query(..., alias="round"), start_lap: int = Query(...), end_lap: int = Query(...)):
-    if end_lap < start_lap:
-        start_lap, end_lap = end_lap, start_lap
-
+def _compute_replay(round_number: int, start_lap: int, end_lap: int):
+    """Does the actual work for a lap range. Shared by the foreground
+    /replay request and the background full-race prewarm, so whichever one
+    runs first for a given range does the work and the other just reuses
+    the cached result via _lap_frame_cache."""
     cache_key = (round_number, start_lap, end_lap)
-    if cache_key in _replay_cache:
+    with _cache_lock:
+        cached = _replay_cache.get(cache_key)
+    if cached is not None:
         print(f"Serving cached replay for round {round_number} laps {start_lap}-{end_lap}")
-        return _replay_cache[cache_key]
+        return cached
 
     session = get_cached_session(round_number)
     laps = session.laps
@@ -415,6 +424,45 @@ def get_replay(round_number: int = Query(..., alias="round"), start_lap: int = Q
         frames_by_driver[drv] = new_frames
 
     result = {"driver_info": driver_info, "frames": frames_by_driver}
-    _replay_cache[cache_key] = result
+    with _cache_lock:
+        _replay_cache[cache_key] = result
     print(f"Finished and cached replay for round {round_number} laps {start_lap}-{end_lap}")
+    return result
+
+
+def _prewarm_full_race(round_number: int):
+    """Kicks off a background thread that computes the whole race for this
+    round, so future range requests for it are fast. Only ever fires once
+    per round. Any laps already computed for a previously-requested range
+    are skipped automatically, since compute_driver_frames only fetches
+    laps that aren't already in _lap_frame_cache."""
+    with _warmed_rounds_lock:
+        if round_number in _warmed_rounds:
+            return
+        _warmed_rounds.add(round_number)
+
+    def run():
+        try:
+            session = get_cached_session(round_number)
+            total_laps = int(session.laps['LapNumber'].max())
+            print(f"Prewarming round {round_number} in background: laps 1-{total_laps}")
+            _compute_replay(round_number, 1, total_laps)
+            print(f"Round {round_number} background prewarm complete.")
+        except Exception as e:
+            print(f"WARNING: background prewarm for round {round_number} failed: {e!r}")
+            with _warmed_rounds_lock:
+                _warmed_rounds.discard(round_number)
+
+    threading.Thread(target=run, daemon=True).start()
+
+
+@app.get("/replay")
+def get_replay(round_number: int = Query(..., alias="round"), start_lap: int = Query(...), end_lap: int = Query(...)):
+    if end_lap < start_lap:
+        start_lap, end_lap = end_lap, start_lap
+
+    result = _compute_replay(round_number, start_lap, end_lap)
+
+    _prewarm_full_race(round_number)
+
     return result

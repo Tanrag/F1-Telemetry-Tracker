@@ -1,5 +1,4 @@
-Add Circuit Choice
+Fix Track Loader Failure Issue
 Optimize Loading Speeds
-Fix GUI Size
 Update GUI Further
 Fix Individual Driver Info GUI
