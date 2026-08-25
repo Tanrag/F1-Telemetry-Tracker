@@ -1,1 +1,4 @@
-hi
+Added yellow flag, red flag, safety car indicators
+Added sector indicatorsAdd fast lap indicator
+Added driver penalty indicators and popups
+Fixed Track Loader Failure Issue

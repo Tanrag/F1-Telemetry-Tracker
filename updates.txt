@@ -1,7 +1,3 @@
-Add yellow flag, red flag, safety car indicators
-Add sector indicatorsAdd fast lap indicator
-Add driver penalty indicators and popups
-Fix Track Loader Failure Issue
 Optimize Loading Speeds
 Update GUI Further
 Fix Individual Driver Info GUI

@@ -15,6 +15,7 @@
       --line: #232327;
       --accent: #E10600;
       --accent-bright: #ff2a1f;
+      --purple: #b967ff;
       --display: 'Barlow Semi Condensed', sans-serif;
       --mono: 'JetBrains Mono', monospace;
     }
@@ -231,11 +232,17 @@
       padding: 12px 20px 16px;
     }
 
+    .track-wrap {
+      position: relative;
+      width: 78%;
+      flex-shrink: 0;
+      height: 100%;
+    }
+
     #trackSvg {
       background: #111;
       border-radius: 8px;
-      width: 78%;
-      flex-shrink: 0;
+      width: 100%;
       height: 100%;
       display: block;
     }
@@ -299,6 +306,18 @@
       overflow: hidden;
       text-overflow: ellipsis;
       flex-shrink: 1;
+    }
+
+    .lb-fl-chip {
+      font-family: var(--mono);
+      font-weight: 700;
+      font-size: 9px;
+      line-height: 1.5;
+      color: #0a0a0a;
+      background: var(--purple);
+      padding: 0 4px;
+      border-radius: 3px;
+      flex-shrink: 0;
     }
 
     .lb-meta {
@@ -419,10 +438,151 @@
       font-size: 12px;
     }
 
+    /* Fastest-lap toast, banked over the track panel */
+    .fl-toast {
+      position: absolute;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: none;
+      align-items: stretch;
+      gap: 10px;
+      background: rgba(10, 10, 10, 0.95);
+      border: 1px solid var(--purple);
+      border-radius: 8px;
+      padding: 8px 16px 8px 12px;
+      z-index: 6;
+      box-shadow: 0 4px 22px rgba(185, 103, 255, 0.35);
+      opacity: 0;
+    }
+
+    .fl-toast.show {
+      display: flex;
+      animation: flToastFade 3.6s ease forwards;
+    }
+
+    .fl-toast-stripe {
+      width: 4px;
+      border-radius: 2px;
+      background: var(--purple);
+    }
+
+    .fl-toast-label {
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--purple);
+    }
+
+    .fl-toast-name {
+      font-family: var(--display);
+      font-weight: 700;
+      font-size: 14px;
+      color: #fff;
+      white-space: nowrap;
+    }
+
+    .fl-toast-time {
+      font-family: var(--mono);
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    @keyframes flToastFade {
+      0%   { opacity: 0; transform: translateX(-50%) translateY(-6px); }
+      8%   { opacity: 1; transform: translateX(-50%) translateY(0); }
+      85%  { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    .fl-flash-path {
+      opacity: 0;
+      animation: flFlashPulse 0.9s ease-out forwards;
+    }
+
+    @keyframes flFlashPulse {
+      0%   { opacity: 0; }
+      25%  { opacity: 1; }
+      100% { opacity: 0; }
+    }
+
+    .status-toast {
+      position: absolute;
+      top: 14px;
+      left: 14px;
+      display: none;
+      align-items: center;
+      gap: 10px;
+      background: rgba(10, 10, 10, 0.95);
+      border: 1px solid #ffb020;
+      border-radius: 8px;
+      padding: 8px 16px 8px 12px;
+      z-index: 6;
+      opacity: 0;
+      box-shadow: 0 4px 22px rgba(255, 176, 32, 0.3);
+    }
+
+    .status-toast.show {
+      display: flex;
+      animation: flToastFade 3.6s ease forwards;
+    }
+
+    .status-toast-stripe {
+      width: 4px;
+      align-self: stretch;
+      border-radius: 2px;
+    }
+
+    .status-toast-label {
+      font-family: var(--display);
+      font-weight: 700;
+      font-size: 13px;
+      color: #fff;
+      white-space: nowrap;
+    }
+
+    /* Safety car / VSC indicator dot, bottom-left of the track panel */
+    .sc-indicator {
+      position: absolute;
+      bottom: 14px;
+      left: 14px;
+      display: none;
+      align-items: center;
+      gap: 7px;
+      background: rgba(10, 10, 10, 0.85);
+      border: 1px solid #ffb020;
+      border-radius: 20px;
+      padding: 5px 12px 5px 9px;
+      font-family: var(--mono);
+      font-weight: 700;
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      color: #ffb020;
+      z-index: 6;
+    }
+
+    .sc-indicator.show { display: flex; }
+
+    .sc-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: #ffb020;
+      flex-shrink: 0;
+      animation: scPulse 1.1s ease-in-out infinite;
+    }
+
+    @keyframes scPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%      { opacity: 0.4; transform: scale(0.7); }
+    }
+
     @media (max-width: 900px) {
       .dashboard-viewport { height: auto; }
       .dashboard { flex-direction: column; }
-      #trackSvg { width: 100%; height: 300px; }
+      .track-wrap { width: 100%; height: 300px; }
       .leaderboard { height: 400px; }
     }
   </style>
@@ -481,7 +641,25 @@
     <div class="accent-line"></div>
 
     <main class="dashboard">
-      <svg id="trackSvg" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="track-wrap">
+        <svg id="trackSvg" viewBox="0 0 1400 800" preserveAspectRatio="xMidYMid meet"></svg>
+        <div id="flToast" class="fl-toast">
+          <div class="fl-toast-stripe" id="flToastStripe"></div>
+          <div>
+            <div class="fl-toast-label">Fastest Lap</div>
+            <div class="fl-toast-name" id="flToastName"></div>
+            <div class="fl-toast-time" id="flToastTime"></div>
+          </div>
+        </div>
+        <div id="statusToast" class="status-toast">
+          <div class="status-toast-stripe" id="statusToastStripe"></div>
+          <div class="status-toast-label" id="statusToastLabel"></div>
+        </div>
+        <div id="scIndicator" class="sc-indicator">
+          <span class="sc-dot"></span>
+          <span id="scIndicatorLabel">SC</span>
+        </div>
+      </div>
       <div id="leaderboard" class="leaderboard"></div>
     </main>
   </div>
@@ -567,7 +745,21 @@
       pinnedDriver = null;
       hoveredDriver = null;
 
+      fastestLapEvents = [];
+      flIdx = -1;
+      currentFlHolder = null;
+      document.getElementById('flToast').classList.remove('show');
+
+      trackStatusEvents = [];
+      tsIdx = -1;
+      currentTrackStatus = null;
+      trackPathD = null;
+      trackPathEl = null;
+      document.getElementById('statusToast').classList.remove('show');
+      document.getElementById('scIndicator').classList.remove('show');
+
       const svg = document.getElementById('trackSvg');
+      svg.querySelectorAll('.fl-flash-path').forEach(el => el.remove());
       svg.innerHTML = '';
       document.getElementById('leaderboard').innerHTML = '';
       document.getElementById('tooltip').style.display = 'none';
@@ -668,6 +860,28 @@
     let dots = {};
     let cursors = {};
 
+    // Fastest-lap progression for the currently loaded replay range, sorted
+    // by time. flIdx tracks which event is "current" as playback moves so we
+    // only fire the toast/flash when crossing INTO a new record, not when
+    // scrubbing around inside one.
+    let fastestLapEvents = [];
+    let flIdx = -1;
+    let currentFlHolder = null;
+
+    // Track status (flags / SC / VSC) progression for the currently loaded
+    // range, same sorted-events + index pattern as the fastest-lap tracking.
+    let trackStatusEvents = [];
+    let tsIdx = -1;
+    let currentTrackStatus = null;
+
+    const STATUS_TOAST_STYLE = {
+      safety_car: { color: '#ffb020', label: 'Safety Car Deployed' },
+      vsc: { color: '#ffb020', label: 'Virtual Safety Car Deployed' },
+      vsc_ending: { color: '#ffb020', label: 'VSC Ending' },
+    };
+    const TRACK_FLAG_COLORS = { yellow: '#e6c200', red: '#e10600' };
+    const TRACK_DEFAULT_COLOR = '#555';
+
     const svgNS = "http://www.w3.org/2000/svg";
     const PADDING = 60;
     const VIEW_W = 1400, VIEW_H = 800;
@@ -706,6 +920,9 @@
       return [px, py];
     }
 
+    let trackPathD = null;
+    let trackPathEl = null;
+
     async function loadTrackOutline() {
       const res = await fetch(`http://127.0.0.1:8000/track-outline?round=${currentRound}`);
       const data = await res.json();
@@ -719,10 +936,13 @@
 
       const path = document.createElementNS(svgNS, 'path');
       path.setAttribute('d', d);
-      path.setAttribute('stroke', '#555');
+      path.setAttribute('stroke', TRACK_DEFAULT_COLOR);
       path.setAttribute('stroke-width', '4');
       path.setAttribute('fill', 'none');
       svg.appendChild(path);
+
+      trackPathD = d;
+      trackPathEl = path;
     }
 
     async function loadReplay() {
@@ -781,6 +1001,30 @@
       isPlaying = true;
       document.getElementById('playPauseBtn').textContent = 'Pause';
 
+      // Fastest-lap state for this range. Silently seed flIdx/currentFlHolder
+      // to wherever currentT already sits (e.g. loading laps 40-45 shouldn't
+      // replay every earlier record with a toast) — only crossings that
+      // happen DURING playback trigger the toast/flash.
+      fastestLapEvents = (replayData.fastestLaps || []).slice().sort((a, b) => a.t - b.t);
+      document.getElementById('flToast').classList.remove('show');
+      svg.querySelectorAll('.fl-flash-path').forEach(el => el.remove());
+      flIdx = findFlIndexForT(currentT);
+      currentFlHolder = flIdx >= 0 ? fastestLapEvents[flIdx] : null;
+
+      // Same seeding pattern for track status, plus a synthetic "-Infinity"
+      // entry for whatever flag/SC state was already active before this
+      // window started, so a mid-safety-car load starts colored/flagged
+      // correctly instead of waiting for the next real event.
+      trackStatusEvents = (replayData.trackStatusEvents || []).slice().sort((a, b) => a.t - b.t);
+      if (replayData.initialTrackStatus) {
+        trackStatusEvents.unshift({ ...replayData.initialTrackStatus, t: -Infinity });
+      }
+      document.getElementById('statusToast').classList.remove('show');
+      tsIdx = findTsIndexForT(currentT);
+      currentTrackStatus = tsIdx >= 0 ? trackStatusEvents[tsIdx] : null;
+      applyTrackColor(currentTrackStatus ? currentTrackStatus.kind : 'clear');
+      applyScIndicator(currentTrackStatus);
+
       if (!listenersAttached) {
         svg.addEventListener('mousemove', handleSvgMouseMove);
         svg.addEventListener('mouseleave', () => {
@@ -825,6 +1069,111 @@
       return res;
     }
 
+    // Same binary-search shape as findCursor above, over the sorted
+    // fastestLapEvents list: returns the index of the latest record that had
+    // already been set by time t, or -1 if none had.
+    function findFlIndexForT(t) {
+      let lo = 0, hi = fastestLapEvents.length - 1, res = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (fastestLapEvents[mid].t <= t) { res = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      return res;
+    }
+
+    function updateFastestLap() {
+      const idx = findFlIndexForT(currentT);
+      if (idx === flIdx) return;
+      const movingForward = idx > flIdx;
+      flIdx = idx;
+      currentFlHolder = idx >= 0 ? fastestLapEvents[idx] : null;
+      if (movingForward && currentFlHolder) {
+        showFastestLapToast(currentFlHolder);
+        triggerTrackFlash();
+      }
+    }
+
+    function showFastestLapToast(event) {
+      const info = replayData.driver_info[event.drv];
+      const stripe = document.getElementById('flToastStripe');
+      const toast = document.getElementById('flToast');
+      stripe.style.background = teamColor(event.team || (info && info.team));
+      document.getElementById('flToastName').textContent = info ? info.name : event.drv;
+      document.getElementById('flToastTime').textContent = `Lap ${event.lap} — ${event.lapTime}`;
+
+      // Restart the CSS animation even if a toast is already mid-fade.
+      toast.classList.remove('show');
+      void toast.offsetWidth;
+      toast.classList.add('show');
+    }
+
+    function triggerTrackFlash() {
+      if (!trackPathD) return;
+      const svg = document.getElementById('trackSvg');
+      const flashPath = document.createElementNS(svgNS, 'path');
+      flashPath.setAttribute('d', trackPathD);
+      flashPath.setAttribute('stroke', 'var(--purple)');
+      flashPath.setAttribute('stroke-width', '10');
+      flashPath.setAttribute('stroke-linecap', 'round');
+      flashPath.setAttribute('fill', 'none');
+      flashPath.setAttribute('class', 'fl-flash-path');
+      svg.appendChild(flashPath);
+      flashPath.addEventListener('animationend', () => flashPath.remove());
+    }
+
+    function applyTrackColor(kind) {
+      if (!trackPathEl) return;
+      trackPathEl.setAttribute('stroke', TRACK_FLAG_COLORS[kind] || TRACK_DEFAULT_COLOR);
+    }
+
+    function applyScIndicator(status) {
+      const el = document.getElementById('scIndicator');
+      const active = status && (status.kind === 'safety_car' || status.kind === 'vsc' || status.kind === 'vsc_ending');
+      if (active) {
+        document.getElementById('scIndicatorLabel').textContent = status.kind === 'safety_car' ? 'SC' : 'VSC';
+        el.classList.add('show');
+      } else {
+        el.classList.remove('show');
+      }
+    }
+
+    function findTsIndexForT(t) {
+      let lo = 0, hi = trackStatusEvents.length - 1, res = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (trackStatusEvents[mid].t <= t) { res = mid; lo = mid + 1; }
+        else hi = mid - 1;
+      }
+      return res;
+    }
+
+    function updateTrackStatus() {
+      const idx = findTsIndexForT(currentT);
+      if (idx === tsIdx) return;
+      const movingForward = idx > tsIdx;
+      tsIdx = idx;
+      currentTrackStatus = idx >= 0 ? trackStatusEvents[idx] : null;
+      applyTrackColor(currentTrackStatus ? currentTrackStatus.kind : 'clear');
+      applyScIndicator(currentTrackStatus);
+      if (movingForward && currentTrackStatus) {
+        showStatusToast(currentTrackStatus);
+      }
+    }
+
+    function showStatusToast(status) {
+      const style = STATUS_TOAST_STYLE[status.kind];
+      if (!style) return; // yellow/red only recolor the track, no toast
+      const toast = document.getElementById('statusToast');
+      toast.style.borderColor = style.color;
+      document.getElementById('statusToastStripe').style.background = style.color;
+      document.getElementById('statusToastLabel').textContent = style.label;
+
+      toast.classList.remove('show');
+      void toast.offsetWidth;
+      toast.classList.add('show');
+    }
+
     function renderFrame() {
       drivers.forEach(drv => {
         const frames = replayData.frames[drv];
@@ -848,6 +1197,8 @@
         dots[drv].style.opacity = isOut ? '0.35' : '1';
       });
 
+      updateFastestLap();
+      updateTrackStatus();
       renderLeaderboard();
       if (pinnedDriver) updateTooltip(pinnedDriver);
       else if (hoveredDriver) updateTooltip(hoveredDriver);
@@ -952,6 +1303,8 @@
       });
 
       board.innerHTML = rows.map(r => {
+        const flChip = (currentFlHolder && currentFlHolder.drv === r.drv) ? '<span class="lb-fl-chip">FL</span>' : '';
+
         if (r.isOut) {
           const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
           return `
@@ -959,6 +1312,7 @@
               <span class="lb-tab" style="background:${teamColor(r.info.team)}"></span>
               <span class="lb-pos">–</span>
               <span class="lb-name">${r.info.name}</span>
+              ${flChip}
               <span class="lb-meta">OUT · L${lapLabel ?? '?'}</span>
             </div>
           `;
@@ -978,6 +1332,7 @@
             <span class="lb-tab" style="background:${teamColor(r.info.team)}"></span>
             <span class="lb-pos" title="${posTitle}">${posLabel}</span>
             <span class="lb-name">${r.info.name}</span>
+            ${flChip}
             <span class="lb-meta">L${r.frame.lap} · ${r.frame.compound ?? ''}${r.pitTag ? ' · ' + r.pitTag : ''} · ${gap}</span>
           </div>
         `;
