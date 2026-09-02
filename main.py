@@ -18,7 +18,7 @@ fastf1.Cache.enable_cache(CACHE_DIR)
 
 CACHE_FILE = os.path.join(CACHE_DIR, "lap_frame_cache.pkl")
 
-CACHE_SCHEMA_VERSION = 5
+CACHE_SCHEMA_VERSION = 6
 
 TARGET_TELEMETRY_TEAMS = {"McLaren", "Red Bull Racing", "Ferrari", "Mercedes"}
 
@@ -425,6 +425,8 @@ def _split_bulk_telemetry_into_lap_frames(round_number, drv, missing_slice, driv
             "driverAhead": row['DriverAheadName'] if isinstance(row['DriverAheadName'], str) else None,
             "driverAheadNum": ahead_num,
             "inPit": bool(in_pit),
+            "throttle": None if pd.isna(row.get('Throttle')) else float(row['Throttle']),
+            "brake": None if pd.isna(row.get('Brake')) else bool(row['Brake']),
         })
 
     for lap_number, frames in by_lap.items():
@@ -480,6 +482,8 @@ def _fetch_laps_individually(round_number, drv, missing_slice, driver_number_to_
                 "driverAhead": row['DriverAheadName'] if isinstance(row['DriverAheadName'], str) else None,
                 "driverAheadNum": ahead_num,
                 "inPit": bool(in_pit),
+                "throttle": None if pd.isna(row.get('Throttle')) else float(row['Throttle']),
+                "brake": None if pd.isna(row.get('Brake')) else bool(row['Brake']),
             })
         _lap_frame_cache[(round_number, drv, lap_number)] = frames
         print(f"    round {round_number} driver {drv} lap {lap_number}: {len(frames)} frames recovered individually")

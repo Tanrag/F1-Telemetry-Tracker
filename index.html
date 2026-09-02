@@ -433,12 +433,45 @@
     }
 
     .tooltip strong {
-      font-family: var(--display);
-      font-weight: 700;
-      font-size: 12px;
-    }
+    font-family: var(--display);
+    font-weight: 700;
+    font-size: 12px;
+  }
 
-    /* Fastest-lap toast, banked over the track panel */
+    .tooltip-bars {
+    margin-top: 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .tooltip-bar-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .tooltip-bar-label {
+    width: 14px;
+    font-family: var(--mono);
+    font-size: 9px;
+    color: var(--muted);
+  }
+
+  .tooltip-bar-track {
+    width: 70px;
+    height: 6px;
+    background: #232327;
+    border-radius: 3px;
+    overflow: hidden;
+  }
+
+  .tooltip-bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.1s linear;
+  }
+
     .fl-toast {
       position: absolute;
       top: 14px;
@@ -1245,39 +1278,55 @@
     }
 
     function updateTooltip(drv) {
-      const svg = document.getElementById('trackSvg');
-      const tooltip = document.getElementById('tooltip');
-      const info = replayData.driver_info[drv];
-      const frames = replayData.frames[drv];
-      const frame = frames[cursors[drv]];
-      if (!frame) return;
-      const isOut = dots[drv].dataset.out === '1';
+    const svg = document.getElementById('trackSvg');
+    const tooltip = document.getElementById('tooltip');
+    const info = replayData.driver_info[drv];
+    const frames = replayData.frames[drv];
+    const frame = frames[cursors[drv]];
+    if (!frame) return;
+    const isOut = dots[drv].dataset.out === '1';
 
-      const gap = isOut ? 'OUT'
-        : frame.lapped ? 'LAPPED'
-        : (frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A'));
-      const ahead = frame.driverAhead || 'Leader';
+    const gap = isOut ? 'OUT'
+      : frame.lapped ? 'LAPPED'
+      : (frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A'));
+    const ahead = frame.driverAhead || 'Leader';
 
-      const posDisplay = frame.position ?? (info.gridPosition != null ? `${info.gridPosition}* (grid)` : 'N/A');
+    const posDisplay = frame.position ?? (info.gridPosition != null ? `${info.gridPosition}* (grid)` : 'N/A');
 
-      tooltip.innerHTML = `
-        <strong>${info.name}</strong> (${info.team})<br>
-        Lap: ${frame.lap ?? 'N/A'}${isOut ? ' (last known)' : ''}<br>
-        Position: ${posDisplay}<br>
-        Tyre: ${frame.compound ?? 'N/A'}<br>
-        ${isOut ? 'Status: OUT' : `Gap to ${ahead}: ${gap}`}
-      `;
+    const throttlePct = frame.throttle != null ? Math.max(0, Math.min(100, frame.throttle)) : 0;
+    const brakePct = frame.brake ? 100 : 0;
+    const barsHtml = frame.throttle != null || frame.brake != null ? `
+      <div class="tooltip-bars">
+        <div class="tooltip-bar-row">
+          <span class="tooltip-bar-label">T</span>
+          <div class="tooltip-bar-track"><div class="tooltip-bar-fill" style="width:${throttlePct}%;background:#2ecc71"></div></div>
+        </div>
+        <div class="tooltip-bar-row">
+          <span class="tooltip-bar-label">B</span>
+          <div class="tooltip-bar-track"><div class="tooltip-bar-fill" style="width:${brakePct}%;background:#e10600"></div></div>
+        </div>
+      </div>
+    ` : '';
 
-      const dot = dots[drv];
-      const pt = svg.createSVGPoint();
-      pt.x = parseFloat(dot.getAttribute('cx'));
-      pt.y = parseFloat(dot.getAttribute('cy'));
-      const screenPt = pt.matrixTransform(svg.getScreenCTM());
+    tooltip.innerHTML = `
+      <strong>${info.name}</strong> (${info.team})<br>
+      Lap: ${frame.lap ?? 'N/A'}${isOut ? ' (last known)' : ''}<br>
+      Position: ${posDisplay}<br>
+      Tyre: ${frame.compound ?? 'N/A'}<br>
+      ${isOut ? 'Status: OUT' : `Gap to ${ahead}: ${gap}`}
+      ${barsHtml}
+    `;
 
-      tooltip.style.left = (screenPt.x + window.scrollX + 12) + 'px';
-      tooltip.style.top = (screenPt.y + window.scrollY - 10) + 'px';
-      tooltip.style.display = 'block';
-    }
+    const dot = dots[drv];
+    const pt = svg.createSVGPoint();
+    pt.x = parseFloat(dot.getAttribute('cx'));
+    pt.y = parseFloat(dot.getAttribute('cy'));
+    const screenPt = pt.matrixTransform(svg.getScreenCTM());
+
+    tooltip.style.left = (screenPt.x + window.scrollX + 12) + 'px';
+    tooltip.style.top = (screenPt.y + window.scrollY - 10) + 'px';
+    tooltip.style.display = 'block';
+  }
 
     function renderLeaderboard() {
       const board = document.getElementById('leaderboard');
