@@ -1,3 +1,2 @@
 Optimize Loading Speeds
-Update GUI Further
-Fix Individual Driver Info GUI
+Fix Hungary Track Drawing Issue

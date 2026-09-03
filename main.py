@@ -18,7 +18,7 @@ fastf1.Cache.enable_cache(CACHE_DIR)
 
 CACHE_FILE = os.path.join(CACHE_DIR, "lap_frame_cache.pkl")
 
-CACHE_SCHEMA_VERSION = 6
+CACHE_SCHEMA_VERSION = 7
 
 TARGET_TELEMETRY_TEAMS = {"McLaren", "Red Bull Racing", "Ferrari", "Mercedes"}
 
@@ -78,6 +78,13 @@ TRACK_STATUS_LABELS = {
 
 _warmed_rounds = set()
 _warmed_rounds_lock = threading.Lock()
+
+# --- OpenF1 session_key lookup + team radio caches -------------------------
+_openf1_session_key_cache = {}
+_openf1_session_key_lock = threading.Lock()
+
+_radio_cache = {}
+_radio_cache_lock = threading.Lock()
 
 
 def get_cached_session(round_number: int):
@@ -234,6 +241,7 @@ def get_telemetry(driver: str, round_number: int = Query(..., alias="round")):
 
         speed_ms = telemetry['Speed'] / 3.6
         telemetry['GapToDriverAhead'] = telemetry['DistanceToDriverAhead'] / speed_ms.replace(0, np.nan)
+        telemetry['SpeedMph'] = telemetry['Speed'] * 0.621371
 
         result[lap_number] = {
             "lap_info": _lap_info_dict(lap),
@@ -252,19 +260,37 @@ def get_live_data(driver_number: int):
 @app.get("/track-outline")
 def get_track_outline(round_number: int = Query(..., alias="round")):
     session = get_cached_session(round_number)
-    fastest_lap = session.laps.pick_fastest()
+    laps = session.laps
+
+    accurate = laps[laps['IsAccurate'] == True]
+    candidates = accurate if not accurate.empty else laps
+    fastest_lap = candidates.pick_fastest()
     tel = fastest_lap.get_telemetry()
 
-    xs = tel['X'].values
-    ys = tel['Y'].values
+    if len(tel) < 100 and not accurate.empty:
+        best_lap, best_len = None, 0
+        for _, lap in accurate.iterrows():
+            t = lap.get_telemetry()
+            if len(t) > best_len:
+                best_len, best_lap = len(t), t
+        if best_lap is not None:
+            tel = best_lap
+
+    xs, ys, distances = tel['X'].values, tel['Y'].values, tel['Distance'].values
 
     bounds = {
         "min_x": float(xs.min()), "max_x": float(xs.max()),
         "min_y": float(ys.min()), "max_y": float(ys.max()),
     }
+    points = [{"x": float(x), "y": float(y), "distance": float(d)}
+              for x, y, d in zip(xs, ys, distances)]
 
-    points = [{"x": float(x), "y": float(y)} for x, y in zip(xs, ys)]
-    return {"points": points, "bounds": bounds}
+    return {
+        "points": points,
+        "bounds": bounds,
+        "straightZones": _compute_straight_zones(session, float(distances.max())),
+        "pitLane": _compute_pit_lane_path(session),
+    }
 
 
 def lap_at_time(frames, t):
@@ -427,6 +453,7 @@ def _split_bulk_telemetry_into_lap_frames(round_number, drv, missing_slice, driv
             "inPit": bool(in_pit),
             "throttle": None if pd.isna(row.get('Throttle')) else float(row['Throttle']),
             "brake": None if pd.isna(row.get('Brake')) else bool(row['Brake']),
+            "speed": None if pd.isna(row.get('SpeedMph')) else float(row['SpeedMph']),
         })
 
     for lap_number, frames in by_lap.items():
@@ -484,6 +511,7 @@ def _fetch_laps_individually(round_number, drv, missing_slice, driver_number_to_
                 "inPit": bool(in_pit),
                 "throttle": None if pd.isna(row.get('Throttle')) else float(row['Throttle']),
                 "brake": None if pd.isna(row.get('Brake')) else bool(row['Brake']),
+                "speed": None if pd.isna(row.get('SpeedMph')) else float(row['SpeedMph']),
             })
         _lap_frame_cache[(round_number, drv, lap_number)] = frames
         print(f"    round {round_number} driver {drv} lap {lap_number}: {len(frames)} frames recovered individually")
@@ -635,3 +663,142 @@ def get_replay(round_number: int = Query(..., alias="round"), start_lap: int = Q
         "trackStatusEvents": track_status_events,
         "initialTrackStatus": initial_track_status,
     }
+
+
+# --- Team radio --------------------------------------------------------
+def _get_openf1_session_key(round_number: int):
+    """OpenF1 keys sessions by session_key, not our round_number, so we
+    resolve it once per round (via year + country + session name) and
+    cache the result — including a cached None when nothing matches."""
+    with _openf1_session_key_lock:
+        cached = _openf1_session_key_cache.get(round_number)
+        if round_number in _openf1_session_key_cache:
+            return cached
+
+    session = get_cached_session(round_number)
+    country = session.event.get('Country')
+
+    try:
+        r = requests.get('https://api.openf1.org/v1/sessions', params={
+            'year': 2026,
+            'session_name': 'Race',
+            'country_name': country,
+        })
+        results = r.json()
+    except Exception as e:
+        print(f"WARNING: OpenF1 session lookup failed for round {round_number}: {e!r}")
+        results = []
+
+    session_key = results[0]['session_key'] if results else None
+    if session_key is None:
+        print(f"No OpenF1 session_key found for round {round_number} ({country}) — "
+              f"radio will be unavailable for this round.")
+
+    with _openf1_session_key_lock:
+        _openf1_session_key_cache[round_number] = session_key
+    return session_key
+
+
+@app.get("/radio/{driver_number}")
+def get_team_radio(driver_number: int, round_number: int = Query(..., alias="round")):
+    cache_key = (round_number, driver_number)
+    with _radio_cache_lock:
+        cached = _radio_cache.get(cache_key)
+    if cached is not None:
+        return {"messages": cached}
+
+    session_key = _get_openf1_session_key(round_number)
+    if session_key is None:
+        with _radio_cache_lock:
+            _radio_cache[cache_key] = []
+        return {"messages": []}
+
+    try:
+        r = requests.get('https://api.openf1.org/v1/team_radio', params={
+            'session_key': session_key,
+            'driver_number': driver_number,
+        })
+        raw = r.json()
+    except Exception as e:
+        print(f"WARNING: OpenF1 team_radio fetch failed for round {round_number} driver {driver_number}: {e!r}")
+        raw = []
+
+    session = get_cached_session(round_number)
+    t0 = session.t0_date
+    if t0.tzinfo is None:
+        t0 = t0.tz_localize('UTC')
+
+    messages = []
+    for msg in raw:
+        try:
+            msg_time = pd.Timestamp(msg['date'])
+            if msg_time.tzinfo is None:
+                msg_time = msg_time.tz_localize('UTC')
+            t_offset = (msg_time - t0).total_seconds()
+        except Exception:
+            t_offset = None
+        messages.append({
+            "t": t_offset,
+            "date": msg['date'],
+            "recordingUrl": msg['recording_url'],
+        })
+    messages.sort(key=lambda m: m['t'] if m['t'] is not None else 0)
+
+    with _radio_cache_lock:
+        _radio_cache[cache_key] = messages
+    return {"messages": messages}
+
+def _compute_straight_zones(session, lap_length, min_length=250):
+    circuit_info = session.get_circuit_info()
+    corners = circuit_info.corners.sort_values('Distance')
+    corner_distances = corners['Distance'].values.tolist()
+    if not corner_distances:
+        return []
+
+    segments = [(corner_distances[i], corner_distances[i + 1])
+                for i in range(len(corner_distances) - 1)]
+    segments.append((corner_distances[-1], corner_distances[0] + lap_length))
+
+    ranges = []
+    for start, end in segments:
+        if (end - start) < min_length:
+            continue
+        if end <= lap_length:
+            ranges.append({"start": float(start), "end": float(end)})
+        else:
+            ranges.append({"start": float(start), "end": float(lap_length)})
+            ranges.append({"start": 0.0, "end": float(end - lap_length)})
+    return ranges
+
+def _compute_pit_lane_path(session):
+    laps = session.laps
+
+    entry_points = []
+    for _, lap in laps[laps['PitInTime'].notna()].iterrows():
+        try:
+            tel = lap.get_telemetry()
+        except Exception:
+            continue
+        pit_in = lap['PitInTime']
+        if tel.empty or pd.isna(pit_in):
+            continue
+        seg = tel[tel['SessionTime'] >= pit_in]
+        if len(seg) >= 10:
+            entry_points = [{"x": float(x), "y": float(y)} for x, y in zip(seg['X'], seg['Y'])]
+            break
+
+    exit_points = []
+    for _, lap in laps[laps['PitOutTime'].notna()].iterrows():
+        try:
+            tel = lap.get_telemetry()
+        except Exception:
+            continue
+        pit_out = lap['PitOutTime']
+        if tel.empty or pd.isna(pit_out):
+            continue
+        seg = tel[tel['SessionTime'] <= pit_out]
+        if len(seg) >= 10:
+            exit_points = [{"x": float(x), "y": float(y)} for x, y in zip(seg['X'], seg['Y'])]
+            break
+
+    return {"entry": entry_points, "exit": exit_points}
