@@ -40,8 +40,8 @@
       opacity: 0.75;
       mix-blend-mode: screen;
       background-repeat: repeat;
-      background-size: 560px 560px;
-      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='560' height='560' viewBox='0 0 560 560'%3E%3Cg fill='none' stroke='%23ffffff' stroke-width='1.3' stroke-linecap='round'%3E%3Cpath d='M-40 90 C 60 10, 140 170, 240 90 S 420 10, 520 90 S 660 170, 720 90'/%3E%3Cpath d='M-40 300 C 40 380, 140 220, 220 300 S 380 380, 460 300 S 600 220, 680 300'/%3E%3Cpath d='M420 -40 C 500 40, 380 120, 460 200 C 520 260, 440 320, 500 400 C 540 450, 480 500, 520 560'/%3E%3Cpath d='M80 420 C 40 470, 120 500, 90 560'/%3E%3Cpath d='M300 40 C 260 -10, 340 0, 300 -40'/%3E%3C/g%3E%3C/svg%3E");
+      background-size: 820px 820px;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='820' height='820' viewBox='0 0 820 820'%3E%3Cg fill='none' stroke='%23ffffff' stroke-linecap='round'%3E%3Cpath d='M-40 70 C 50 -20, 130 160, 220 80 S 400 -10, 480 100 S 640 150, 700 50' stroke-width='1.4' opacity='0.55'/%3E%3Cpath d='M-30 230 C 60 270, 90 150, 180 220 S 320 290, 390 190' stroke-width='0.9' opacity='0.7'/%3E%3Cpath d='M540 -30 C 490 60, 610 100, 550 200 C 500 280, 630 300, 570 400' stroke-width='1.1' opacity='0.4'/%3E%3Cpath d='M90 380 C 180 330, 150 470, 260 430 S 410 480, 460 390' stroke-width='1.6' opacity='0.6'/%3E%3Cpath d='M660 300 C 710 370, 630 430, 700 490 C 750 530, 690 570, 750 630' stroke-width='0.8' opacity='0.5'/%3E%3Cpath d='M-40 530 C 40 470, 100 590, 180 530 S 300 610, 370 540 S 490 470, 550 550' stroke-width='1.2' opacity='0.65'/%3E%3Cpath d='M300 -40 C 250 30, 350 60, 290 140' stroke-width='1.0' opacity='0.45'/%3E%3Cpath d='M770 60 C 810 130, 740 160, 800 240' stroke-width='0.9' opacity='0.5'/%3E%3Cpath d='M30 710 C 90 660, 50 770, 140 720' stroke-width='1.3' opacity='0.55'/%3E%3Cpath d='M610 700 C 670 650, 700 760, 790 700' stroke-width='1.0' opacity='0.4'/%3E%3Cpath d='M170 620 C 240 570, 210 690, 310 640 S 430 710, 490 630' stroke-width='0.7' opacity='0.6'/%3E%3Cpath d='M440 500 C 480 550, 420 580, 470 630' stroke-width='1.5' opacity='0.35'/%3E%3C/g%3E%3C/svg%3E");
     }
 
     .dashboard-viewport,
@@ -1197,19 +1197,6 @@
       const stepX = w / (windowSize - 1);
       const xOffset = w - (slice.length - 1) * stepX;
 
-      // FastF1's Brake channel is on/off, not a pressure reading, so there's
-      // no true "how hard" value to plot directly. We approximate intensity
-      // from how fast the car is losing speed (mph/s) while the brake flag
-      // is on, using the full frame history (not just this window) so the
-      // first point isn't cut off from its preceding frame.
-      const intensities = slice.map((f, i) => {
-        if (!f.brake) return 0;
-        const prev = frames[start + i - 1];
-        if (!prev || prev.speed == null || f.speed == null || f.t <= prev.t) return 0.4;
-        return Math.max(0, (prev.speed - f.speed) / (f.t - prev.t));
-      });
-      const peak = Math.max(1, ...intensities);
-
       const throttlePts = slice.map((f, i) => {
         const x = xOffset + i * stepX;
         const t = f.throttle != null ? Math.max(0, Math.min(100, f.throttle)) : 0;
@@ -1217,13 +1204,13 @@
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       }).join(' ');
 
-      // Brake drawn as a continuous red trace mirroring the throttle line:
-      // height is the normalised deceleration, and it sits at zero whenever
-      // the brake flag is off.
+      // FastF1's Brake channel is on/off, not a pressure reading, so there's
+      // no true "how hard" value to plot — it's drawn at full height
+      // whenever the flag is on and flat at zero otherwise, exactly like a
+      // 0/100 throttle trace would be.
       const brakePts = slice.map((f, i) => {
         const x = xOffset + i * stepX;
-        const frac = f.brake ? Math.max(0.12, intensities[i] / peak) : 0;
-        const y = h - frac * h;
+        const y = f.brake ? 0 : h;
         return `${x.toFixed(1)},${y.toFixed(1)}`;
       }).join(' ');
 

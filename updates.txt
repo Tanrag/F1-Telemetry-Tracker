@@ -1,3 +1,4 @@
 Fix braking chart
+Make all the fonts consistent
 Optimize Loading Speeds
 Fix Hungary Track Drawing Issue
