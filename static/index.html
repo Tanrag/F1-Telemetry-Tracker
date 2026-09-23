@@ -45,6 +45,10 @@
     }
 
     .dashboard-viewport,
+    .telemetry-section {
+      position: relative;
+      z-index: 1;
+    }
 
     .side-wrap { position: relative; flex: 1; min-width: 220px; min-height: 0; height: 100%; }
 
@@ -80,11 +84,6 @@
     @keyframes loadSlide {
       0%   { transform: translateX(-100%); }
       100% { transform: translateX(250%); }
-    }
-
-    .telemetry-section {
-      position: relative;
-      z-index: 1;
     }
 
     button:focus-visible, select:focus-visible, input:focus-visible {
@@ -952,6 +951,8 @@
   <script>
     let currentRound = null;
 
+    const API_BASE = location.port === '5500' ? 'http://127.0.0.1:8000' : '';
+
     async function loadEvents() {
       const select = document.getElementById('trackSelect');
       const status = document.getElementById('status');
@@ -959,7 +960,7 @@
 
       let res;
       try {
-        res = await fetch('/events');
+        res = await fetch(`${API_BASE}/events`);
       } catch (err) {
         select.innerHTML = '<option>Failed to load tracks</option>';
         status.textContent = `Could not reach /events — is the backend running? (${err.message})`;
@@ -1069,7 +1070,7 @@
       lapsDiv.innerHTML = '';
       status.textContent = 'Loading... this may take a while.';
 
-      const res = await fetch(`/telemetry/${driver}?round=${currentRound}`);
+      const res = await fetch(`${API_BASE}/telemetry/${driver}?round=${currentRound}`);
       const data = await res.json();
       status.textContent = '';
 
@@ -1292,7 +1293,7 @@
     let trackPathEl = null;
 
     async function loadTrackOutline() {
-      const res = await fetch(`/track-outline?round=${currentRound}`);
+      const res = await fetch(`${API_BASE}/track-outline?round=${currentRound}`);
       const data = await res.json();
       trackBounds = data.bounds;
 
@@ -1377,7 +1378,7 @@ function startProgressPolling() {
   stopProgressPolling();
   const tick = async () => {
     try {
-      const res = await fetch(`/progress?round=${currentRound}`);
+      const res = await fetch(`${API_BASE}/progress?round=${currentRound}`);
       updateLoadPanel(await res.json());
     } catch (err) { /* transient, next tick will retry */ }
   };
@@ -1402,7 +1403,7 @@ async function loadReplay() {
 
     const startLap = document.getElementById('lapStartInput').value;
     const endLap = document.getElementById('lapEndInput').value;
-    const res = await fetch(`/replay?round=${currentRound}&start_lap=${startLap}&end_lap=${endLap}`);
+    const res = await fetch(`${API_BASE}/replay?round=${currentRound}&start_lap=${startLap}&end_lap=${endLap}`);
     if (!res.ok) throw new Error(`Backend responded ${res.status} ${res.statusText}`);
     replayData = await res.json();
 
@@ -1877,7 +1878,7 @@ async function loadRadioForDriver(drv) {
   const driverNumber = parseInt(drv, 10);
   let data;
   try {
-    const res = await fetch(`/radio/${driverNumber}?round=${currentRound}`);
+    const res = await fetch(`${API_BASE}/radio/${driverNumber}?round=${currentRound}`);
     data = await res.json();
   } catch (err) {
     panel.innerHTML = '<div class="radio-empty">Could not load radio.</div>';
