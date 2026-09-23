@@ -914,10 +914,10 @@
 
       let res;
       try {
-        res = await fetch('http://127.0.0.1:8000/events');
+        res = await fetch('/events');
       } catch (err) {
         select.innerHTML = '<option>Failed to load tracks</option>';
-        status.textContent = `Could not reach http://127.0.0.1:8000/events — is the backend running? (${err.message})`;
+        status.textContent = `Could not reach /events — is the backend running? (${err.message})`;
         console.error('loadEvents fetch failed:', err);
         return;
       }
@@ -1021,7 +1021,7 @@
       lapsDiv.innerHTML = '';
       status.textContent = 'Loading... this may take a while.';
 
-      const res = await fetch(`http://127.0.0.1:8000/telemetry/${driver}?round=${currentRound}`);
+      const res = await fetch(`telemetry/${driver}?round=${currentRound}`);
       const data = await res.json();
       status.textContent = '';
 
@@ -1244,7 +1244,7 @@
     let trackPathEl = null;
 
     async function loadTrackOutline() {
-      const res = await fetch(`http://127.0.0.1:8000/track-outline?round=${currentRound}`);
+      const res = await fetch(`/track-outline?round=${currentRound}`);
       const data = await res.json();
       trackBounds = data.bounds;
 
@@ -1307,7 +1307,7 @@
 
       const startLap = document.getElementById('lapStartInput').value;
       const endLap = document.getElementById('lapEndInput').value;
-      const res = await fetch(`http://127.0.0.1:8000/replay?round=${currentRound}&start_lap=${startLap}&end_lap=${endLap}`);
+      const res = await fetch(`/replay?round=${currentRound}&start_lap=${startLap}&end_lap=${endLap}`);
       replayData = await res.json();
 
       if (replayData.error) {
@@ -1779,7 +1779,7 @@
       const driverNumber = parseInt(drv, 10);
       let data;
       try {
-        const res = await fetch(`http://127.0.0.1:8000/radio/${driverNumber}?round=${currentRound}`);
+        const res = await fetch(`/radio/${driverNumber}?round=${currentRound}`);
         data = await res.json();
       } catch (err) {
         panel.innerHTML = '<div class="radio-empty">Could not load radio.</div>';
