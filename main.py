@@ -802,3 +802,5 @@ def _compute_pit_lane_path(session):
             break
 
     return {"entry": entry_points, "exit": exit_points}
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")

@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+fastf1
+requests
+numpy
+pandas
