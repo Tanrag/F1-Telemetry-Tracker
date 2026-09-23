@@ -80,16 +80,30 @@ TRACK_STATUS_LABELS = {
 _warmed_rounds = set()
 _warmed_rounds_lock = threading.Lock()
 
-# --- OpenF1 session_key lookup + team radio caches -------------------------
 _openf1_session_key_cache = {}
 _openf1_session_key_lock = threading.Lock()
 
 _radio_cache = {}
 _radio_cache_lock = threading.Lock()
 
+_progress = {}
+_progress_lock = threading.Lock()
+
+
+def _set_progress(round_number, stage, done=0, total=0):
+    with _progress_lock:
+        _progress[round_number] = {"stage": stage, "done": done, "total": total}
+
+
+def _bump_progress(round_number):
+    with _progress_lock:
+        p = _progress.get(round_number)
+        if p is not None:
+            p["done"] += 1
 
 def get_cached_session(round_number: int):
     if round_number not in _session_cache:
+        _set_progress(round_number, "Downloading session data")
         session = fastf1.get_session(2026, round_number, 'R')
         session.load()
         if len(session.drivers) == 0:
@@ -260,6 +274,7 @@ def get_live_data(driver_number: int):
 
 @app.get("/track-outline")
 def get_track_outline(round_number: int = Query(..., alias="round")):
+    _set_progress(round_number, "Loading track layout")
     session = get_cached_session(round_number)
     laps = session.laps
 
@@ -294,10 +309,10 @@ def get_track_outline(round_number: int = Query(..., alias="round")):
     }
 
 
-def lap_at_time(frames, t):
+def lap_at_time(frames, times, t):
     if not frames:
         return None
-    idx = bisect.bisect_right([f['t'] for f in frames], t) - 1
+    idx = bisect.bisect_right(times, t) - 1
     idx = max(0, min(idx, len(frames) - 1))
     return frames[idx]['lap']
 
@@ -535,7 +550,7 @@ def compute_driver_frames(round_number, drv, drv_laps, driver_number_to_name, dr
     return frames
 
 
-def _compute_replay(round_number: int, start_lap: int, end_lap: int):
+def _compute_replay(round_number: int, start_lap: int, end_lap: int, report_progress: bool = True):
     cache_key = (round_number, start_lap, end_lap)
     with _cache_lock:
         cached = _replay_cache.get(cache_key)
@@ -543,6 +558,8 @@ def _compute_replay(round_number: int, start_lap: int, end_lap: int):
         print(f"Serving cached replay for round {round_number} laps {start_lap}-{end_lap}")
         return cached
 
+    if report_progress:
+        _set_progress(round_number, "Loading session data")
     session = get_cached_session(round_number)
     laps = session.laps
 
@@ -571,17 +588,27 @@ def _compute_replay(round_number: int, start_lap: int, end_lap: int):
 
     driver_number_to_team = {drv: driver_info[drv]["team"] for drv in session.drivers}
 
+    if report_progress:
+        _set_progress(round_number, "Processing driver telemetry", 0, len(session.drivers))
+
     def process_driver(drv):
         all_drv_laps = laps.pick_drivers(drv)
         drv_laps = all_drv_laps[(all_drv_laps['LapNumber'] >= start_lap) & (all_drv_laps['LapNumber'] <= end_lap)]
         frames = compute_driver_frames(round_number, drv, drv_laps, driver_number_to_name, driver_number_to_team)
         frames.sort(key=lambda f: f['t'])
+        if report_progress:
+            _bump_progress(round_number)
         return drv, frames
 
     frames_by_driver = {}
     with ThreadPoolExecutor(max_workers=min(22, len(session.drivers))) as pool:
         for drv, frames in pool.map(process_driver, session.drivers):
             frames_by_driver[drv] = frames
+
+    if report_progress:
+        _set_progress(round_number, "Finalizing", len(session.drivers), len(session.drivers))
+
+    times_by_driver = {d: [f['t'] for f in fr] for d, fr in frames_by_driver.items()}
 
     for drv, frames in frames_by_driver.items():
         new_frames = []
@@ -590,7 +617,7 @@ def _compute_replay(round_number: int, start_lap: int, end_lap: int):
             ahead_num = f.pop("driverAheadNum")
             lapped = False
             if ahead_num and ahead_num in frames_by_driver:
-                ahead_lap = lap_at_time(frames_by_driver[ahead_num], f['t'])
+                ahead_lap = lap_at_time(frames_by_driver[ahead_num], times_by_driver[ahead_num], f['t'])
                 if ahead_lap is not None and ahead_lap != f['lap']:
                     lapped = True
             f["lapped"] = lapped
@@ -602,6 +629,8 @@ def _compute_replay(round_number: int, start_lap: int, end_lap: int):
     result = {"driver_info": driver_info, "frames": frames_by_driver}
     with _cache_lock:
         _replay_cache[cache_key] = result
+    if report_progress:
+        _set_progress(round_number, "idle")
     print(f"Finished and cached replay for round {round_number} laps {start_lap}-{end_lap}")
     return result
 
@@ -617,7 +646,7 @@ def _prewarm_full_race(round_number: int):
             session = get_cached_session(round_number)
             total_laps = int(session.laps['LapNumber'].max())
             print(f"Prewarming round {round_number} in background: laps 1-{total_laps}")
-            _compute_replay(round_number, 1, total_laps)
+            _compute_replay(round_number, 1, total_laps, report_progress=False)
             _compute_fastest_lap_events(round_number)
             _compute_track_status_events(round_number)
             print(f"Round {round_number} background prewarm complete.")
@@ -666,7 +695,6 @@ def get_replay(round_number: int = Query(..., alias="round"), start_lap: int = Q
     }
 
 
-# --- Team radio --------------------------------------------------------
 def _get_openf1_session_key(round_number: int):
     """OpenF1 keys sessions by session_key, not our round_number, so we
     resolve it once per round (via year + country + session name) and
@@ -804,4 +832,9 @@ def _compute_pit_lane_path(session):
 
     return {"entry": entry_points, "exit": exit_points}
 
+@app.get("/progress")
+def get_progress(round_number: int = Query(..., alias="round")):
+    with _progress_lock:
+        return dict(_progress.get(round_number) or {"stage": "idle", "done": 0, "total": 0})
+    
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

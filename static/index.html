@@ -45,6 +45,43 @@
     }
 
     .dashboard-viewport,
+
+    .side-wrap { position: relative; flex: 1; min-width: 220px; min-height: 0; height: 100%; }
+
+    .load-panel {
+      position: absolute;
+      inset: 0;
+      display: none;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      padding: 0 24px;
+      background: #111;
+      border-radius: 8px;
+      z-index: 5;
+      text-align: center;
+    }
+    .load-panel.show { display: flex; }
+
+    .load-title {
+      font-family: var(--display);
+      font-weight: 700;
+      font-size: 13px;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: #fff;
+    }
+    .load-bar { width: 100%; height: 4px; background: var(--line); border-radius: 2px; overflow: hidden; }
+    .load-bar-fill { height: 100%; width: 0; background: var(--accent); transition: width .4s ease; }
+    .load-bar-fill.indeterminate { width: 40%; transition: none; animation: loadSlide 1.2s ease-in-out infinite; }
+    .load-label, .load-detail { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+
+    @keyframes loadSlide {
+      0%   { transform: translateX(-100%); }
+      100% { transform: translateX(250%); }
+    }
+
     .telemetry-section {
       position: relative;
       z-index: 1;
@@ -786,7 +823,7 @@
       .dashboard-viewport { height: auto; }
       .dashboard { flex-direction: column; }
       .track-wrap { width: 100%; height: 300px; }
-      .leaderboard { height: 400px; }
+      .side-wrap { height: 400px; flex: none; }
       .radio-toast { width: calc(100% - 28px); }
     }
   </style>
@@ -883,7 +920,15 @@
           </div>
         </div>
       </div>
-      <div id="leaderboard" class="leaderboard"></div>
+      <div class="side-wrap">
+        <div id="leaderboard" class="leaderboard"></div>
+        <div id="loadPanel" class="load-panel">
+          <div class="load-title">Loading Race</div>
+          <div class="load-bar"><div id="loadBarFill" class="load-bar-fill indeterminate"></div></div>
+          <div id="loadLabel" class="load-label">Starting…</div>
+          <div id="loadDetail" class="load-detail"></div>
+        </div>
+      </div>
     </main>
 
     <div class="seek-row">
@@ -965,6 +1010,9 @@
     function onTrackChange() {
       currentRound = parseInt(document.getElementById('trackSelect').value, 10);
 
+      stopProgressPolling();
+      hideLoadPanel();
+
       trackBounds = null;
       if (animationHandle) clearInterval(animationHandle);
       if (scanHandle) clearInterval(scanHandle);
@@ -1021,7 +1069,7 @@
       lapsDiv.innerHTML = '';
       status.textContent = 'Loading... this may take a while.';
 
-      const res = await fetch(`telemetry/${driver}?round=${currentRound}`);
+      const res = await fetch(`/telemetry/${driver}?round=${currentRound}`);
       const data = await res.json();
       status.textContent = '';
 
@@ -1299,766 +1347,816 @@
       drawPitSegment(pit.exit);
     }
 
-    async function loadReplay() {
-      if (!currentRound) { alert('Please select a track first.'); return; }
+    let progressTimer = null;
 
-      if (animationHandle) clearInterval(animationHandle);
-      if (!trackBounds) await loadTrackOutline();
+function showLoadPanel() {
+  updateLoadPanel({ stage: 'idle', done: 0, total: 0 });
+  document.getElementById('loadPanel').classList.add('show');
+}
 
-      const startLap = document.getElementById('lapStartInput').value;
-      const endLap = document.getElementById('lapEndInput').value;
-      const res = await fetch(`/replay?round=${currentRound}&start_lap=${startLap}&end_lap=${endLap}`);
-      replayData = await res.json();
+function hideLoadPanel() {
+  document.getElementById('loadPanel').classList.remove('show');
+}
 
-      if (replayData.error) {
-        alert(replayData.error);
-        return;
-      }
+function updateLoadPanel(p) {
+  const bar = document.getElementById('loadBarFill');
+  const stage = (!p.stage || p.stage === 'idle') ? 'Starting…' : p.stage;
+  document.getElementById('loadLabel').textContent = stage;
+  if (p.total > 0) {
+    bar.classList.remove('indeterminate');
+    bar.style.width = Math.round((p.done / p.total) * 100) + '%';
+    document.getElementById('loadDetail').textContent = `${p.done} / ${p.total} drivers`;
+  } else {
+    bar.classList.add('indeterminate');
+    bar.style.width = '';
+    document.getElementById('loadDetail').textContent = '';
+  }
+}
 
-      setupPlayback();
+function startProgressPolling() {
+  stopProgressPolling();
+  const tick = async () => {
+    try {
+      const res = await fetch(`/progress?round=${currentRound}`);
+      updateLoadPanel(await res.json());
+    } catch (err) { /* transient, next tick will retry */ }
+  };
+  tick();
+  progressTimer = setInterval(tick, 500);
+}
+
+function stopProgressPolling() {
+  if (progressTimer) clearInterval(progressTimer);
+  progressTimer = null;
+}
+
+async function loadReplay() {
+  if (!currentRound) { alert('Please select a track first.'); return; }
+
+  if (animationHandle) clearInterval(animationHandle);
+  showLoadPanel();
+  startProgressPolling();
+
+  try {
+    if (!trackBounds) await loadTrackOutline();
+
+    const startLap = document.getElementById('lapStartInput').value;
+    const endLap = document.getElementById('lapEndInput').value;
+    const res = await fetch(`/replay?round=${currentRound}&start_lap=${startLap}&end_lap=${endLap}`);
+    if (!res.ok) throw new Error(`Backend responded ${res.status} ${res.statusText}`);
+    replayData = await res.json();
+
+    if (replayData.error) { alert(replayData.error); return; }
+    setupPlayback();
+    renderFrame();
+  } catch (err) {
+    console.error('loadReplay failed:', err);
+    alert(`Could not load replay: ${err.message}`);
+  } finally {
+    stopProgressPolling();
+    hideLoadPanel();
+  }
+}
+
+function setupPlayback() {
+  const svg = document.getElementById('trackSvg');
+  const tooltip = document.getElementById('tooltip');
+
+  svg.querySelectorAll('.car-dot, .sc-car-dot, .trail-dot').forEach(el => el.remove());
+  pinnedDriver = null;
+  hoveredDriver = null;
+  tooltip.style.display = 'none';
+  clearRadioState();
+
+  followMode = false;
+  followDriverNum = null;
+  svg.setAttribute('viewBox', `0 0 ${VIEW_W} ${VIEW_H}`);
+  const followBtn = document.getElementById('followBtn');
+  followBtn.classList.remove('btn-primary');
+  followBtn.textContent = 'Follow';
+
+  drivers = Object.keys(replayData.frames);
+  dots = {};
+  cursors = {};
+  trailDots = {};
+  trailBuffers = {};
+
+  // Trail dots are created first so they sit below every car dot in
+  // z-order, regardless of which driver they belong to.
+  drivers.forEach(drv => {
+    const info = replayData.driver_info[drv];
+    trailBuffers[drv] = [];
+    trailDots[drv] = [];
+    for (let i = 0; i < TRAIL_LENGTH; i++) {
+      const tdot = document.createElementNS(svgNS, 'circle');
+      tdot.setAttribute('r', 2);
+      tdot.setAttribute('fill', teamColor(info.team));
+      tdot.setAttribute('class', 'trail-dot');
+      tdot.style.opacity = '0';
+      tdot.style.pointerEvents = 'none';
+      svg.appendChild(tdot);
+      trailDots[drv].push(tdot);
     }
+  });
 
-    function setupPlayback() {
-      const svg = document.getElementById('trackSvg');
-      const tooltip = document.getElementById('tooltip');
+  drivers.forEach(drv => {
+    const info = replayData.driver_info[drv];
+    const dot = document.createElementNS(svgNS, 'circle');
+    dot.setAttribute('r', 8);
+    dot.setAttribute('fill', teamColor(info.team));
+    dot.setAttribute('stroke', '#000');
+    dot.setAttribute('stroke-width', '1');
+    dot.setAttribute('class', 'car-dot');
+    svg.appendChild(dot);
+    dots[drv] = dot;
+    cursors[drv] = 0;
+  });
 
-      svg.querySelectorAll('.car-dot, .sc-car-dot, .trail-dot').forEach(el => el.remove());
-      pinnedDriver = null;
+  scCarDotEl = document.createElementNS(svgNS, 'circle');
+  scCarDotEl.setAttribute('r', 7);
+  scCarDotEl.setAttribute('fill', '#ffb020');
+  scCarDotEl.setAttribute('stroke', '#000');
+  scCarDotEl.setAttribute('stroke-width', '1.5');
+  scCarDotEl.setAttribute('class', 'sc-car-dot');
+  scCarDotEl.style.display = 'none';
+  svg.appendChild(scCarDotEl);
+
+  minT = Infinity; maxT = -Infinity;
+  drivers.forEach(drv => {
+    const frames = replayData.frames[drv];
+    if (frames.length === 0) return;
+    minT = Math.min(minT, frames[0].t);
+    maxT = Math.max(maxT, frames[frames.length - 1].t);
+  });
+  currentT = minT;
+  isPlaying = true;
+  document.getElementById('playPauseBtn').textContent = 'Pause';
+
+  fastestLapEvents = (replayData.fastestLaps || []).slice().sort((a, b) => a.t - b.t);
+  document.getElementById('flToast').classList.remove('show');
+  svg.querySelectorAll('.fl-flash-path').forEach(el => el.remove());
+  flIdx = findFlIndexForT(currentT);
+  currentFlHolder = flIdx >= 0 ? fastestLapEvents[flIdx] : null;
+
+  trackStatusEvents = (replayData.trackStatusEvents || []).slice().sort((a, b) => a.t - b.t);
+  if (replayData.initialTrackStatus) {
+    trackStatusEvents.unshift({ ...replayData.initialTrackStatus, t: -Infinity });
+  }
+  document.getElementById('statusToast').classList.remove('show');
+  tsIdx = findTsIndexForT(currentT);
+  currentTrackStatus = tsIdx >= 0 ? trackStatusEvents[tsIdx] : null;
+  applyTrackColor(currentTrackStatus ? currentTrackStatus.kind : 'clear');
+  applyScIndicator(currentTrackStatus);
+
+  if (!listenersAttached) {
+    svg.addEventListener('mousemove', handleSvgMouseMove);
+    svg.addEventListener('mouseleave', () => {
       hoveredDriver = null;
+      if (!pinnedDriver) tooltip.style.display = 'none';
+    });
+    svg.addEventListener('click', handleSvgClick);
+    document.addEventListener('click', () => {
+      pinnedDriver = null;
       tooltip.style.display = 'none';
       clearRadioState();
+    });
 
-      followMode = false;
-      followDriverNum = null;
-      svg.setAttribute('viewBox', `0 0 ${VIEW_W} ${VIEW_H}`);
-      const followBtn = document.getElementById('followBtn');
-      followBtn.classList.remove('btn-primary');
-      followBtn.textContent = 'Follow';
+    ['radioPanel', 'radioToast'].forEach(id => {
+      document.getElementById(id).addEventListener('click', (e) => e.stopPropagation());
+    });
 
-      drivers = Object.keys(replayData.frames);
-      dots = {};
-      cursors = {};
-      trailDots = {};
-      trailBuffers = {};
+    const rewindBtn = document.getElementById('rewindBtn');
+    const forwardBtn = document.getElementById('forwardBtn');
+    rewindBtn.addEventListener('mousedown', (e) => { e.stopPropagation(); startScan(-1); });
+    forwardBtn.addEventListener('mousedown', (e) => { e.stopPropagation(); startScan(1); });
+    ['mouseup', 'mouseleave'].forEach(evt => {
+      rewindBtn.addEventListener(evt, stopScan);
+      forwardBtn.addEventListener(evt, stopScan);
+    });
 
-      // Trail dots are created first so they sit below every car dot in
-      // z-order, regardless of which driver they belong to.
-      drivers.forEach(drv => {
-        const info = replayData.driver_info[drv];
-        trailBuffers[drv] = [];
-        trailDots[drv] = [];
-        for (let i = 0; i < TRAIL_LENGTH; i++) {
-          const tdot = document.createElementNS(svgNS, 'circle');
-          tdot.setAttribute('r', 2);
-          tdot.setAttribute('fill', teamColor(info.team));
-          tdot.setAttribute('class', 'trail-dot');
-          tdot.style.opacity = '0';
-          tdot.style.pointerEvents = 'none';
-          svg.appendChild(tdot);
-          trailDots[drv].push(tdot);
-        }
+    const seekBar = document.getElementById('seekBar');
+    seekBar.addEventListener('mousedown', (e) => { e.stopPropagation(); seekDragging = true; });
+    seekBar.addEventListener('click', (e) => e.stopPropagation());
+    seekBar.addEventListener('input', () => {
+      if (!isFinite(minT) || !isFinite(maxT) || maxT <= minT) return;
+      const frac = seekBar.value / 1000;
+      currentT = minT + frac * (maxT - minT);
+      renderFrame();
+    });
+    ['change', 'mouseup'].forEach(evt => seekBar.addEventListener(evt, () => { seekDragging = false; }));
+
+    listenersAttached = true;
+  }
+
+  syncSeekBarUI();
+
+  const tickMs = 100;
+  animationHandle = setInterval(() => {
+    if (isPlaying) {
+      currentT += step * playbackSpeed;
+      if (currentT > maxT) {
+        if (loopEnabled) currentT = minT;
+        else currentT = maxT;
+      }
+    }
+    renderFrame();
+  }, tickMs);
+}
+
+function findCursor(frames, t) {
+  let lo = 0, hi = frames.length - 1, res = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (frames[mid].t <= t) { res = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return res;
+}
+
+function findFlIndexForT(t) {
+  let lo = 0, hi = fastestLapEvents.length - 1, res = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (fastestLapEvents[mid].t <= t) { res = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return res;
+}
+
+function updateFastestLap() {
+  const idx = findFlIndexForT(currentT);
+  if (idx === flIdx) return;
+  const movingForward = idx > flIdx;
+  flIdx = idx;
+  currentFlHolder = idx >= 0 ? fastestLapEvents[idx] : null;
+  if (movingForward && currentFlHolder) {
+    showFastestLapToast(currentFlHolder);
+    triggerTrackFlash();
+  }
+}
+
+function showFastestLapToast(event) {
+  const info = replayData.driver_info[event.drv];
+  const stripe = document.getElementById('flToastStripe');
+  const toast = document.getElementById('flToast');
+  stripe.style.background = teamColor(event.team || (info && info.team));
+  document.getElementById('flToastName').textContent = info ? info.name : event.drv;
+  document.getElementById('flToastTime').textContent = `Lap ${event.lap} — ${event.lapTime}`;
+
+  toast.classList.remove('show');
+  void toast.offsetWidth;
+  toast.classList.add('show');
+}
+
+function triggerTrackFlash() {
+  if (!trackPathD) return;
+  const svg = document.getElementById('trackSvg');
+  const flashPath = document.createElementNS(svgNS, 'path');
+  flashPath.setAttribute('d', trackPathD);
+  flashPath.setAttribute('stroke', 'var(--purple)');
+  flashPath.setAttribute('stroke-width', '10');
+  flashPath.setAttribute('stroke-linecap', 'round');
+  flashPath.setAttribute('fill', 'none');
+  flashPath.setAttribute('class', 'fl-flash-path');
+  svg.appendChild(flashPath);
+  flashPath.addEventListener('animationend', () => flashPath.remove());
+}
+
+function applyTrackColor(kind) {
+  if (!trackPathEl) return;
+  trackPathEl.setAttribute('stroke', TRACK_FLAG_COLORS[kind] || TRACK_DEFAULT_COLOR);
+}
+
+function applyScIndicator(status) {
+  const el = document.getElementById('scIndicator');
+  const active = status && (status.kind === 'safety_car' || status.kind === 'vsc' || status.kind === 'vsc_ending');
+  if (active) {
+    document.getElementById('scIndicatorLabel').textContent = status.kind === 'safety_car' ? 'SC' : 'VSC';
+    el.classList.add('show');
+  } else {
+    el.classList.remove('show');
+  }
+}
+
+function findTsIndexForT(t) {
+  let lo = 0, hi = trackStatusEvents.length - 1, res = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (trackStatusEvents[mid].t <= t) { res = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return res;
+}
+
+function updateTrackStatus() {
+  const idx = findTsIndexForT(currentT);
+  if (idx === tsIdx) return;
+  const movingForward = idx > tsIdx;
+  tsIdx = idx;
+  currentTrackStatus = idx >= 0 ? trackStatusEvents[idx] : null;
+  applyTrackColor(currentTrackStatus ? currentTrackStatus.kind : 'clear');
+  applyScIndicator(currentTrackStatus);
+  if (movingForward && currentTrackStatus) {
+    showStatusToast(currentTrackStatus);
+  }
+}
+
+function showStatusToast(status) {
+  const style = STATUS_TOAST_STYLE[status.kind] || { color: '#ffb020', label: status.label };
+  const toast = document.getElementById('statusToast');
+  toast.style.borderColor = style.color;
+  document.getElementById('statusToastStripe').style.background = style.color;
+  document.getElementById('statusToastLabel').textContent = style.label;
+
+  toast.classList.remove('show');
+  void toast.offsetWidth;
+  toast.classList.add('show');
+}
+
+function updateSafetyCarMarker() {
+  if (!scCarDotEl) return;
+
+  if (!currentTrackStatus || currentTrackStatus.kind !== 'safety_car') {
+    scCarDotEl.style.display = 'none';
+    return;
+  }
+
+  const leaderDrv = drivers.find(d => {
+    const idx = cursors[d];
+    const frames = replayData.frames[d];
+    const f = frames && frames[idx];
+    return f && f.position === 1 && dots[d].dataset.out !== '1';
+  });
+
+  if (!leaderDrv) {
+    scCarDotEl.style.display = 'none';
+    return;
+  }
+
+  const lx = parseFloat(dots[leaderDrv].getAttribute('cx'));
+  const ly = parseFloat(dots[leaderDrv].getAttribute('cy'));
+  scCarDotEl.setAttribute('cx', lx + 14);
+  scCarDotEl.setAttribute('cy', ly - 14);
+  scCarDotEl.style.display = '';
+}
+
+function formatSeekTime(t) {
+  if (!isFinite(t) || !isFinite(minT)) return '0:00';
+  const rel = Math.max(0, t - minT);
+  const m = Math.floor(rel / 60);
+  const s = Math.floor(rel % 60);
+  return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+function syncSeekBarUI() {
+  const seekBar = document.getElementById('seekBar');
+  if (!seekBar) return;
+  if (!seekDragging && isFinite(minT) && isFinite(maxT) && maxT > minT) {
+    const frac = (currentT - minT) / (maxT - minT);
+    seekBar.value = Math.round(Math.max(0, Math.min(1, frac)) * 1000);
+  }
+  document.getElementById('seekCurrentLabel').textContent = formatSeekTime(currentT);
+  document.getElementById('seekTotalLabel').textContent = formatSeekTime(maxT);
+}
+
+function toggleFollow() {
+  const svg = document.getElementById('trackSvg');
+  const followBtn = document.getElementById('followBtn');
+
+  if (followMode) {
+    followMode = false;
+    followDriverNum = null;
+    svg.setAttribute('viewBox', `0 0 ${VIEW_W} ${VIEW_H}`);
+    followBtn.classList.remove('btn-primary');
+    followBtn.textContent = 'Follow';
+    return;
+  }
+
+  if (!replayData || !pinnedDriver) {
+    alert('Click a car on the track (or a leaderboard row) to pick a driver first, then hit Follow.');
+    return;
+  }
+
+  followDriverNum = pinnedDriver;
+  followMode = true;
+  followBtn.classList.add('btn-primary');
+  const shortName = (replayData.driver_info[followDriverNum]?.name || followDriverNum).split(' ').pop();
+  followBtn.textContent = `Following ${shortName}`;
+}
+
+function updateFollowCamera() {
+  if (!followMode || !followDriverNum) return;
+  const dot = dots[followDriverNum];
+  if (!dot) return;
+  const fx = parseFloat(dot.getAttribute('cx'));
+  const fy = parseFloat(dot.getAttribute('cy'));
+  if (isNaN(fx) || isNaN(fy)) return;
+  const svg = document.getElementById('trackSvg');
+  svg.setAttribute('viewBox', `${(fx - FOLLOW_ZOOM / 2).toFixed(1)} ${(fy - FOLLOW_ZOOM / 2).toFixed(1)} ${FOLLOW_ZOOM} ${FOLLOW_ZOOM}`);
+}
+
+function renderFrame() {
+  drivers.forEach(drv => {
+    const frames = replayData.frames[drv];
+    const tdots = trailDots[drv];
+
+    if (!frames || frames.length === 0) {
+      dots[drv].style.display = 'none';
+      dots[drv].dataset.out = '1';
+      tdots.forEach(t => t.style.opacity = '0');
+      return;
+    }
+    dots[drv].style.display = '';
+
+    const lastT = frames[frames.length - 1].t;
+    const isOut = currentT > lastT;
+    dots[drv].dataset.out = isOut ? '1' : '0';
+
+    const idx = findCursor(frames, Math.min(currentT, lastT));
+    cursors[drv] = idx;
+    const frame = frames[idx];
+    const [px, py] = transformPoint(frame.x, frame.y);
+    dots[drv].setAttribute('cx', px);
+    dots[drv].setAttribute('cy', py);
+    dots[drv].style.opacity = isOut ? '0.35' : '1';
+
+    if (isOut) {
+      dots[drv].setAttribute('stroke', '#000');
+      dots[drv].setAttribute('stroke-width', '1');
+      dots[drv].setAttribute('r', 8);
+      trailBuffers[drv] = [];
+      tdots.forEach(t => t.style.opacity = '0');
+    } else {
+      const tbColor = throttleBrakeColor(frame);
+      dots[drv].setAttribute('stroke', tbColor);
+      dots[drv].setAttribute('stroke-width', frame.brake ? 3 : 1.5);
+      dots[drv].setAttribute('r', frame.brake ? 9 : 8);
+
+      const buf = trailBuffers[drv];
+      buf.push({ x: px, y: py, color: tbColor });
+      if (buf.length > TRAIL_LENGTH) buf.shift();
+
+      tdots.forEach(t => t.style.opacity = '0');
+      buf.forEach((point, j) => {
+        const dotIndex = TRAIL_LENGTH - buf.length + j;
+        const tdot = tdots[dotIndex];
+        if (!tdot) return;
+        const ageFactor = (j + 1) / buf.length;
+        tdot.setAttribute('cx', point.x);
+        tdot.setAttribute('cy', point.y);
+        tdot.setAttribute('fill', point.color);
+        tdot.style.opacity = (ageFactor * 0.5).toFixed(2);
+        tdot.setAttribute('r', (1.5 + ageFactor * 2.5).toFixed(1));
       });
-
-      drivers.forEach(drv => {
-        const info = replayData.driver_info[drv];
-        const dot = document.createElementNS(svgNS, 'circle');
-        dot.setAttribute('r', 8);
-        dot.setAttribute('fill', teamColor(info.team));
-        dot.setAttribute('stroke', '#000');
-        dot.setAttribute('stroke-width', '1');
-        dot.setAttribute('class', 'car-dot');
-        svg.appendChild(dot);
-        dots[drv] = dot;
-        cursors[drv] = 0;
-      });
-
-      scCarDotEl = document.createElementNS(svgNS, 'circle');
-      scCarDotEl.setAttribute('r', 7);
-      scCarDotEl.setAttribute('fill', '#ffb020');
-      scCarDotEl.setAttribute('stroke', '#000');
-      scCarDotEl.setAttribute('stroke-width', '1.5');
-      scCarDotEl.setAttribute('class', 'sc-car-dot');
-      scCarDotEl.style.display = 'none';
-      svg.appendChild(scCarDotEl);
-
-      minT = Infinity; maxT = -Infinity;
-      drivers.forEach(drv => {
-        const frames = replayData.frames[drv];
-        if (frames.length === 0) return;
-        minT = Math.min(minT, frames[0].t);
-        maxT = Math.max(maxT, frames[frames.length - 1].t);
-      });
-      currentT = minT;
-      isPlaying = true;
-      document.getElementById('playPauseBtn').textContent = 'Pause';
-
-      fastestLapEvents = (replayData.fastestLaps || []).slice().sort((a, b) => a.t - b.t);
-      document.getElementById('flToast').classList.remove('show');
-      svg.querySelectorAll('.fl-flash-path').forEach(el => el.remove());
-      flIdx = findFlIndexForT(currentT);
-      currentFlHolder = flIdx >= 0 ? fastestLapEvents[flIdx] : null;
-
-      trackStatusEvents = (replayData.trackStatusEvents || []).slice().sort((a, b) => a.t - b.t);
-      if (replayData.initialTrackStatus) {
-        trackStatusEvents.unshift({ ...replayData.initialTrackStatus, t: -Infinity });
-      }
-      document.getElementById('statusToast').classList.remove('show');
-      tsIdx = findTsIndexForT(currentT);
-      currentTrackStatus = tsIdx >= 0 ? trackStatusEvents[tsIdx] : null;
-      applyTrackColor(currentTrackStatus ? currentTrackStatus.kind : 'clear');
-      applyScIndicator(currentTrackStatus);
-
-      if (!listenersAttached) {
-        svg.addEventListener('mousemove', handleSvgMouseMove);
-        svg.addEventListener('mouseleave', () => {
-          hoveredDriver = null;
-          if (!pinnedDriver) tooltip.style.display = 'none';
-        });
-        svg.addEventListener('click', handleSvgClick);
-        document.addEventListener('click', () => {
-          pinnedDriver = null;
-          tooltip.style.display = 'none';
-          clearRadioState();
-        });
-
-        // Clicks inside the radio panel / toast shouldn't unpin the driver,
-        // otherwise using the audio controls closes the thing you're using.
-        ['radioPanel', 'radioToast'].forEach(id => {
-          document.getElementById(id).addEventListener('click', (e) => e.stopPropagation());
-        });
-
-        const rewindBtn = document.getElementById('rewindBtn');
-        const forwardBtn = document.getElementById('forwardBtn');
-        rewindBtn.addEventListener('mousedown', (e) => { e.stopPropagation(); startScan(-1); });
-        forwardBtn.addEventListener('mousedown', (e) => { e.stopPropagation(); startScan(1); });
-        ['mouseup', 'mouseleave'].forEach(evt => {
-          rewindBtn.addEventListener(evt, stopScan);
-          forwardBtn.addEventListener(evt, stopScan);
-        });
-
-        const seekBar = document.getElementById('seekBar');
-        seekBar.addEventListener('mousedown', (e) => { e.stopPropagation(); seekDragging = true; });
-        seekBar.addEventListener('click', (e) => e.stopPropagation());
-        seekBar.addEventListener('input', () => {
-          if (!isFinite(minT) || !isFinite(maxT) || maxT <= minT) return;
-          const frac = seekBar.value / 1000;
-          currentT = minT + frac * (maxT - minT);
-          renderFrame();
-        });
-        ['change', 'mouseup'].forEach(evt => seekBar.addEventListener(evt, () => { seekDragging = false; }));
-
-        listenersAttached = true;
-      }
-
-      syncSeekBarUI();
-
-      const tickMs = 100;
-      animationHandle = setInterval(() => {
-        if (isPlaying) {
-          currentT += step * playbackSpeed;
-          if (currentT > maxT) {
-            if (loopEnabled) currentT = minT;
-            else currentT = maxT;
-          }
-        }
-        renderFrame();
-      }, tickMs);
     }
+  });
 
-    function findCursor(frames, t) {
-      let lo = 0, hi = frames.length - 1, res = 0;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (frames[mid].t <= t) { res = mid; lo = mid + 1; }
-        else hi = mid - 1;
-      }
-      return res;
+  updateFastestLap();
+  updateTrackStatus();
+  updateRadioToast();
+  updateSafetyCarMarker();
+  updateFollowCamera();
+  renderLeaderboard();
+  syncSeekBarUI();
+  if (pinnedDriver) updateTooltip(pinnedDriver);
+  else if (hoveredDriver) updateTooltip(hoveredDriver);
+}
+
+function handleSvgMouseMove(e) {
+  const svg = document.getElementById('trackSvg');
+  const pt = svg.createSVGPoint();
+  pt.x = e.clientX; pt.y = e.clientY;
+  const svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
+
+  let closest = null, closestDist = 16;
+  drivers.forEach(drv => {
+    const dot = dots[drv];
+    if (!dot) return;
+    const dx = svgPt.x - parseFloat(dot.getAttribute('cx'));
+    const dy = svgPt.y - parseFloat(dot.getAttribute('cy'));
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < closestDist) { closestDist = dist; closest = drv; }
+  });
+
+  if (closest !== hoveredDriver) {
+    hoveredDriver = closest;
+    if (!pinnedDriver) {
+      if (hoveredDriver) updateTooltip(hoveredDriver);
+      else document.getElementById('tooltip').style.display = 'none';
     }
+  } else if (hoveredDriver && !pinnedDriver) {
+    updateTooltip(hoveredDriver);
+  }
+}
 
-    function findFlIndexForT(t) {
-      let lo = 0, hi = fastestLapEvents.length - 1, res = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (fastestLapEvents[mid].t <= t) { res = mid; lo = mid + 1; }
-        else hi = mid - 1;
-      }
-      return res;
+function handleSvgClick(e) {
+  e.stopPropagation();
+  const tooltip = document.getElementById('tooltip');
+  if (hoveredDriver) {
+    pinnedDriver = (pinnedDriver === hoveredDriver) ? null : hoveredDriver;
+    if (pinnedDriver) {
+      updateTooltip(pinnedDriver);
+      loadRadioForDriver(pinnedDriver);
+    } else {
+      tooltip.style.display = 'none';
+      clearRadioState();
     }
+  } else {
+    pinnedDriver = null;
+    tooltip.style.display = 'none';
+    clearRadioState();
+  }
+}
 
-    function updateFastestLap() {
-      const idx = findFlIndexForT(currentT);
-      if (idx === flIdx) return;
-      const movingForward = idx > flIdx;
-      flIdx = idx;
-      currentFlHolder = idx >= 0 ? fastestLapEvents[idx] : null;
-      if (movingForward && currentFlHolder) {
-        showFastestLapToast(currentFlHolder);
-        triggerTrackFlash();
-      }
-    }
+async function loadRadioForDriver(drv) {
+  radioMessages = [];
+  radioIdx = -1;
+  const panel = document.getElementById('radioPanel');
+  panel.innerHTML = 'Loading radio…';
 
-    function showFastestLapToast(event) {
-      const info = replayData.driver_info[event.drv];
-      const stripe = document.getElementById('flToastStripe');
-      const toast = document.getElementById('flToast');
-      stripe.style.background = teamColor(event.team || (info && info.team));
-      document.getElementById('flToastName').textContent = info ? info.name : event.drv;
-      document.getElementById('flToastTime').textContent = `Lap ${event.lap} — ${event.lapTime}`;
+  const driverNumber = parseInt(drv, 10);
+  let data;
+  try {
+    const res = await fetch(`/radio/${driverNumber}?round=${currentRound}`);
+    data = await res.json();
+  } catch (err) {
+    panel.innerHTML = '<div class="radio-empty">Could not load radio.</div>';
+    console.error('loadRadioForDriver failed:', err);
+    return;
+  }
 
-      toast.classList.remove('show');
-      void toast.offsetWidth;
-      toast.classList.add('show');
-    }
+  // The driver may have been unpinned while the request was in flight.
+  if (pinnedDriver !== drv) return;
 
-    function triggerTrackFlash() {
-      if (!trackPathD) return;
-      const svg = document.getElementById('trackSvg');
-      const flashPath = document.createElementNS(svgNS, 'path');
-      flashPath.setAttribute('d', trackPathD);
-      flashPath.setAttribute('stroke', 'var(--purple)');
-      flashPath.setAttribute('stroke-width', '10');
-      flashPath.setAttribute('stroke-linecap', 'round');
-      flashPath.setAttribute('fill', 'none');
-      flashPath.setAttribute('class', 'fl-flash-path');
-      svg.appendChild(flashPath);
-      flashPath.addEventListener('animationend', () => flashPath.remove());
-    }
+  radioMessages = (data.messages || []).slice().sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
 
-    function applyTrackColor(kind) {
-      if (!trackPathEl) return;
-      trackPathEl.setAttribute('stroke', TRACK_FLAG_COLORS[kind] || TRACK_DEFAULT_COLOR);
-    }
+  if (radioMessages.length === 0) {
+    panel.innerHTML = '<div class="radio-empty">No radio available for this driver.</div>';
+    return;
+  }
 
-    function applyScIndicator(status) {
-      const el = document.getElementById('scIndicator');
-      const active = status && (status.kind === 'safety_car' || status.kind === 'vsc' || status.kind === 'vsc_ending');
-      if (active) {
-        document.getElementById('scIndicatorLabel').textContent = status.kind === 'safety_car' ? 'SC' : 'VSC';
-        el.classList.add('show');
-      } else {
-        el.classList.remove('show');
-      }
-    }
+  // Start the cursor at the current replay time so messages already in
+  // the past don't all fire toasts at once; only forward crossings pop.
+  radioIdx = findRadioIndexForT(currentT);
+  renderRadioPanel();
+}
 
-    function findTsIndexForT(t) {
-      let lo = 0, hi = trackStatusEvents.length - 1, res = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (trackStatusEvents[mid].t <= t) { res = mid; lo = mid + 1; }
-        else hi = mid - 1;
-      }
-      return res;
-    }
+function findRadioIndexForT(t) {
+  let lo = 0, hi = radioMessages.length - 1, res = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (radioMessages[mid].t != null && radioMessages[mid].t <= t) { res = mid; lo = mid + 1; }
+    else hi = mid - 1;
+  }
+  return res;
+}
 
-    function updateTrackStatus() {
-      const idx = findTsIndexForT(currentT);
-      if (idx === tsIdx) return;
-      const movingForward = idx > tsIdx;
-      tsIdx = idx;
-      currentTrackStatus = idx >= 0 ? trackStatusEvents[idx] : null;
-      applyTrackColor(currentTrackStatus ? currentTrackStatus.kind : 'clear');
-      applyScIndicator(currentTrackStatus);
-      if (movingForward && currentTrackStatus) {
-        showStatusToast(currentTrackStatus);
-      }
-    }
+// The panel is a log of what has already been said, not a full list —
+// it grows as the replay passes each message.
+function renderRadioPanel() {
+  const panel = document.getElementById('radioPanel');
+  if (radioMessages.length === 0) return;
 
-    function showStatusToast(status) {
-      const style = STATUS_TOAST_STYLE[status.kind] || { color: '#ffb020', label: status.label };
-      const toast = document.getElementById('statusToast');
-      toast.style.borderColor = style.color;
-      document.getElementById('statusToastStripe').style.background = style.color;
-      document.getElementById('statusToastLabel').textContent = style.label;
+  if (radioIdx < 0) {
+    panel.innerHTML = '<div class="radio-empty">No radio yet.</div>';
+    return;
+  }
 
-      toast.classList.remove('show');
-      void toast.offsetWidth;
-      toast.classList.add('show');
-    }
+  panel.innerHTML = radioMessages.slice(0, radioIdx + 1).map(m => `
+    <div class="radio-row">
+      <div class="radio-row-head">
+        <span class="radio-time">${m.t != null ? formatSeekTime(m.t) : '?'}</span>
+      </div>
+      ${m.transcript ? `<div class="radio-transcript">"${escapeHtml(m.transcript)}"</div>` : ''}
+      <audio controls src="${m.recordingUrl}" preload="none"></audio>
+    </div>
+  `).join('');
+  panel.scrollTop = panel.scrollHeight;
+}
 
-    function updateSafetyCarMarker() {
-      if (!scCarDotEl) return;
+function showRadioToast(msg) {
+  const toast = document.getElementById('radioToast');
+  const info = replayData.driver_info[pinnedDriver];
+  document.getElementById('radioToastDriver').textContent = (info && info.name) || pinnedDriver;
+  document.getElementById('radioToastText').textContent =
+    msg.transcript ? `"${msg.transcript}"` : 'Team radio message (no transcript available)';
+  document.getElementById('radioToastAudio').src = msg.recordingUrl;
 
-      if (!currentTrackStatus || currentTrackStatus.kind !== 'safety_car') {
-        scCarDotEl.style.display = 'none';
-        return;
-      }
+  toast.classList.remove('show');
+  void toast.offsetWidth;
+  toast.classList.add('show');
+}
 
-      const leaderDrv = drivers.find(d => {
-        const idx = cursors[d];
-        const frames = replayData.frames[d];
-        const f = frames && frames[idx];
-        return f && f.position === 1 && dots[d].dataset.out !== '1';
-      });
+function updateRadioToast() {
+  if (!pinnedDriver || radioMessages.length === 0) return;
+  const idx = findRadioIndexForT(currentT);
+  if (idx === radioIdx) return;
+  const movingForward = idx > radioIdx;
+  radioIdx = idx;
+  renderRadioPanel();
+  if (movingForward && idx >= 0) {
+    showRadioToast(radioMessages[idx]);
+  } else {
+    document.getElementById('radioToast').classList.remove('show');
+  }
+}
 
-      if (!leaderDrv) {
-        scCarDotEl.style.display = 'none';
-        return;
-      }
+function updateTooltip(drv) {
+  const svg = document.getElementById('trackSvg');
+  const tooltip = document.getElementById('tooltip');
+  const info = replayData.driver_info[drv];
+  const frames = replayData.frames[drv];
+  const idx = cursors[drv];
+  const frame = frames[idx];
+  if (!frame) return;
+  const isOut = dots[drv].dataset.out === '1';
 
-      const lx = parseFloat(dots[leaderDrv].getAttribute('cx'));
-      const ly = parseFloat(dots[leaderDrv].getAttribute('cy'));
-      scCarDotEl.setAttribute('cx', lx + 14);
-      scCarDotEl.setAttribute('cy', ly - 14);
-      scCarDotEl.style.display = '';
-    }
+  const gap = isOut ? 'OUT'
+    : frame.lapped ? 'LAPPED'
+    : (frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A'));
+  const ahead = frame.driverAhead || 'Leader';
 
-    function formatSeekTime(t) {
-      if (!isFinite(t) || !isFinite(minT)) return '0:00';
-      const rel = Math.max(0, t - minT);
-      const m = Math.floor(rel / 60);
-      const s = Math.floor(rel % 60);
-      return `${m}:${s.toString().padStart(2, '0')}`;
-    }
+  const posDisplay = frame.position ?? (info.gridPosition != null ? `${info.gridPosition}* (grid)` : 'N/A');
 
-    function syncSeekBarUI() {
-      const seekBar = document.getElementById('seekBar');
-      if (!seekBar) return;
-      if (!seekDragging && isFinite(minT) && isFinite(maxT) && maxT > minT) {
-        const frac = (currentT - minT) / (maxT - minT);
-        seekBar.value = Math.round(Math.max(0, Math.min(1, frac)) * 1000);
-      }
-      document.getElementById('seekCurrentLabel').textContent = formatSeekTime(currentT);
-      document.getElementById('seekTotalLabel').textContent = formatSeekTime(maxT);
-    }
+  const sparkHtml = !isOut ? `<div class="tooltip-spark">${buildSparklineSVG(drv, idx)}</div>` : '';
 
-    function toggleFollow() {
-      const svg = document.getElementById('trackSvg');
-      const followBtn = document.getElementById('followBtn');
+  tooltip.innerHTML = `
+  <strong>${info.name}</strong> (${info.team})<br>
+  Lap: ${frame.lap ?? 'N/A'}${isOut ? ' (last known)' : ''}<br>
+  Position: ${posDisplay}<br>
+  Tyre: ${frame.compound ?? 'N/A'}<br>
+  Speed: ${frame.speed != null ? frame.speed.toFixed(0) + ' mph' : 'N/A'}<br>
+  ${isOut ? 'Status: OUT' : `Gap to ${ahead}: ${gap}`}
+  ${sparkHtml}
+  `;
 
-      if (followMode) {
-        followMode = false;
-        followDriverNum = null;
-        svg.setAttribute('viewBox', `0 0 ${VIEW_W} ${VIEW_H}`);
-        followBtn.classList.remove('btn-primary');
-        followBtn.textContent = 'Follow';
-        return;
-      }
+  const dot = dots[drv];
+  const pt = svg.createSVGPoint();
+  pt.x = parseFloat(dot.getAttribute('cx'));
+  pt.y = parseFloat(dot.getAttribute('cy'));
+  const screenPt = pt.matrixTransform(svg.getScreenCTM());
 
-      if (!replayData || !pinnedDriver) {
-        alert('Click a car on the track (or a leaderboard row) to pick a driver first, then hit Follow.');
-        return;
-      }
+  tooltip.style.left = (screenPt.x + window.scrollX + 12) + 'px';
+  tooltip.style.top = (screenPt.y + window.scrollY - 10) + 'px';
+  tooltip.style.display = 'block';
+}
 
-      followDriverNum = pinnedDriver;
-      followMode = true;
-      followBtn.classList.add('btn-primary');
-      const shortName = (replayData.driver_info[followDriverNum]?.name || followDriverNum).split(' ').pop();
-      followBtn.textContent = `Following ${shortName}`;
-    }
+function pinDriver(drv) {
+  if (!replayData) return;
+  pinnedDriver = (pinnedDriver === drv) ? null : drv;
+  const tooltip = document.getElementById('tooltip');
+  if (pinnedDriver) {
+    updateTooltip(pinnedDriver);
+    loadRadioForDriver(pinnedDriver);
+  } else {
+    tooltip.style.display = 'none';
+    clearRadioState();
+  }
+}
 
-    function updateFollowCamera() {
-      if (!followMode || !followDriverNum) return;
-      const dot = dots[followDriverNum];
-      if (!dot) return;
-      const fx = parseFloat(dot.getAttribute('cx'));
-      const fy = parseFloat(dot.getAttribute('cy'));
-      if (isNaN(fx) || isNaN(fy)) return;
-      const svg = document.getElementById('trackSvg');
-      svg.setAttribute('viewBox', `${(fx - FOLLOW_ZOOM / 2).toFixed(1)} ${(fy - FOLLOW_ZOOM / 2).toFixed(1)} ${FOLLOW_ZOOM} ${FOLLOW_ZOOM}`);
-    }
+function renderLeaderboard() {
+  const board = document.getElementById('leaderboard');
 
-    function renderFrame() {
-      drivers.forEach(drv => {
-        const frames = replayData.frames[drv];
-        const tdots = trailDots[drv];
+  const rows = drivers.map(drv => {
+    const info = replayData.driver_info[drv];
+    const frames = replayData.frames[drv];
+    const isOut = dots[drv].dataset.out === '1';
+    const frame = (frames && frames.length > 0) ? frames[cursors[drv]] : null;
+    const pitTag = frame && frame.inPit ? 'PIT' : '';
 
-        if (!frames || frames.length === 0) {
-          dots[drv].style.display = 'none';
-          dots[drv].dataset.out = '1';
-          tdots.forEach(t => t.style.opacity = '0');
-          return;
-        }
-        dots[drv].style.display = '';
+    const livePos = frame ? frame.position : null;
+    const displayPos = livePos ?? info.gridPosition ?? null;
+    const sortPos = displayPos ?? 999;
 
-        const lastT = frames[frames.length - 1].t;
-        const isOut = currentT > lastT;
-        dots[drv].dataset.out = isOut ? '1' : '0';
+    return { drv, info, frame, isOut, pitTag, livePos, displayPos, sortPos };
+  })
+  .filter(r => r.frame || r.isOut)
+  .sort((a, b) => {
+    if (a.isOut !== b.isOut) return a.isOut ? 1 : -1;
+    if (a.isOut) return (b.info.lastLap ?? 0) - (a.info.lastLap ?? 0);
+    return a.sortPos - b.sortPos;
+  });
 
-        const idx = findCursor(frames, Math.min(currentT, lastT));
-        cursors[drv] = idx;
-        const frame = frames[idx];
-        const [px, py] = transformPoint(frame.x, frame.y);
-        dots[drv].setAttribute('cx', px);
-        dots[drv].setAttribute('cy', py);
-        dots[drv].style.opacity = isOut ? '0.35' : '1';
+  board.innerHTML = rows.map(r => {
+    const flChip = (currentFlHolder && currentFlHolder.drv === r.drv) ? '<span class="lb-fl-chip">FL</span>' : '';
+    const pinnedClass = (pinnedDriver === r.drv) ? ' lb-row--pinned' : '';
 
-        if (isOut) {
-          dots[drv].setAttribute('stroke', '#000');
-          dots[drv].setAttribute('stroke-width', '1');
-          dots[drv].setAttribute('r', 8);
-          trailBuffers[drv] = [];
-          tdots.forEach(t => t.style.opacity = '0');
-        } else {
-          const tbColor = throttleBrakeColor(frame);
-          dots[drv].setAttribute('stroke', tbColor);
-          dots[drv].setAttribute('stroke-width', frame.brake ? 3 : 1.5);
-          dots[drv].setAttribute('r', frame.brake ? 9 : 8);
-
-          const buf = trailBuffers[drv];
-          buf.push({ x: px, y: py, color: tbColor });
-          if (buf.length > TRAIL_LENGTH) buf.shift();
-
-          tdots.forEach(t => t.style.opacity = '0');
-          buf.forEach((point, j) => {
-            const dotIndex = TRAIL_LENGTH - buf.length + j;
-            const tdot = tdots[dotIndex];
-            if (!tdot) return;
-            const ageFactor = (j + 1) / buf.length;
-            tdot.setAttribute('cx', point.x);
-            tdot.setAttribute('cy', point.y);
-            tdot.setAttribute('fill', point.color);
-            tdot.style.opacity = (ageFactor * 0.5).toFixed(2);
-            tdot.setAttribute('r', (1.5 + ageFactor * 2.5).toFixed(1));
-          });
-        }
-      });
-
-      updateFastestLap();
-      updateTrackStatus();
-      updateRadioToast();
-      updateSafetyCarMarker();
-      updateFollowCamera();
-      renderLeaderboard();
-      syncSeekBarUI();
-      if (pinnedDriver) updateTooltip(pinnedDriver);
-      else if (hoveredDriver) updateTooltip(hoveredDriver);
-    }
-
-    function handleSvgMouseMove(e) {
-      const svg = document.getElementById('trackSvg');
-      const pt = svg.createSVGPoint();
-      pt.x = e.clientX; pt.y = e.clientY;
-      const svgPt = pt.matrixTransform(svg.getScreenCTM().inverse());
-
-      let closest = null, closestDist = 16;
-      drivers.forEach(drv => {
-        const dot = dots[drv];
-        if (!dot) return;
-        const dx = svgPt.x - parseFloat(dot.getAttribute('cx'));
-        const dy = svgPt.y - parseFloat(dot.getAttribute('cy'));
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist < closestDist) { closestDist = dist; closest = drv; }
-      });
-
-      if (closest !== hoveredDriver) {
-        hoveredDriver = closest;
-        if (!pinnedDriver) {
-          if (hoveredDriver) updateTooltip(hoveredDriver);
-          else document.getElementById('tooltip').style.display = 'none';
-        }
-      } else if (hoveredDriver && !pinnedDriver) {
-        updateTooltip(hoveredDriver);
-      }
-    }
-
-    function handleSvgClick(e) {
-      e.stopPropagation();
-      const tooltip = document.getElementById('tooltip');
-      if (hoveredDriver) {
-        pinnedDriver = (pinnedDriver === hoveredDriver) ? null : hoveredDriver;
-        if (pinnedDriver) {
-          updateTooltip(pinnedDriver);
-          loadRadioForDriver(pinnedDriver);
-        } else {
-          tooltip.style.display = 'none';
-          clearRadioState();
-        }
-      } else {
-        pinnedDriver = null;
-        tooltip.style.display = 'none';
-        clearRadioState();
-      }
-    }
-
-    async function loadRadioForDriver(drv) {
-      radioMessages = [];
-      radioIdx = -1;
-      const panel = document.getElementById('radioPanel');
-      panel.innerHTML = 'Loading radio…';
-
-      const driverNumber = parseInt(drv, 10);
-      let data;
-      try {
-        const res = await fetch(`/radio/${driverNumber}?round=${currentRound}`);
-        data = await res.json();
-      } catch (err) {
-        panel.innerHTML = '<div class="radio-empty">Could not load radio.</div>';
-        console.error('loadRadioForDriver failed:', err);
-        return;
-      }
-
-      // The driver may have been unpinned while the request was in flight.
-      if (pinnedDriver !== drv) return;
-
-      radioMessages = (data.messages || []).slice().sort((a, b) => (a.t ?? 0) - (b.t ?? 0));
-
-      if (radioMessages.length === 0) {
-        panel.innerHTML = '<div class="radio-empty">No radio available for this driver.</div>';
-        return;
-      }
-
-      // Start the cursor at the current replay time so messages already in
-      // the past don't all fire toasts at once; only forward crossings pop.
-      radioIdx = findRadioIndexForT(currentT);
-      renderRadioPanel();
-    }
-
-    function findRadioIndexForT(t) {
-      let lo = 0, hi = radioMessages.length - 1, res = -1;
-      while (lo <= hi) {
-        const mid = (lo + hi) >> 1;
-        if (radioMessages[mid].t != null && radioMessages[mid].t <= t) { res = mid; lo = mid + 1; }
-        else hi = mid - 1;
-      }
-      return res;
-    }
-
-    // The panel is a log of what has already been said, not a full list —
-    // it grows as the replay passes each message.
-    function renderRadioPanel() {
-      const panel = document.getElementById('radioPanel');
-      if (radioMessages.length === 0) return;
-
-      if (radioIdx < 0) {
-        panel.innerHTML = '<div class="radio-empty">No radio yet.</div>';
-        return;
-      }
-
-      panel.innerHTML = radioMessages.slice(0, radioIdx + 1).map(m => `
-        <div class="radio-row">
-          <div class="radio-row-head">
-            <span class="radio-time">${m.t != null ? formatSeekTime(m.t) : '?'}</span>
-          </div>
-          ${m.transcript ? `<div class="radio-transcript">"${escapeHtml(m.transcript)}"</div>` : ''}
-          <audio controls src="${m.recordingUrl}" preload="none"></audio>
+    if (r.isOut) {
+      const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
+      return `
+        <div class="lb-row lb-row--out${pinnedClass}" data-drv="${r.drv}">
+          <span class="lb-tab" style="background:${teamColor(r.info.team)}"></span>
+          <span class="lb-pos">–</span>
+          <span class="lb-name">${r.info.name}</span>
+          ${flChip}
+          <span class="lb-meta">OUT · L${lapLabel ?? '?'}</span>
         </div>
-      `).join('');
-      panel.scrollTop = panel.scrollHeight;
-    }
-
-    function showRadioToast(msg) {
-      const toast = document.getElementById('radioToast');
-      const info = replayData.driver_info[pinnedDriver];
-      document.getElementById('radioToastDriver').textContent = (info && info.name) || pinnedDriver;
-      document.getElementById('radioToastText').textContent =
-        msg.transcript ? `"${msg.transcript}"` : 'Team radio message (no transcript available)';
-      document.getElementById('radioToastAudio').src = msg.recordingUrl;
-
-      toast.classList.remove('show');
-      void toast.offsetWidth;
-      toast.classList.add('show');
-    }
-
-    function updateRadioToast() {
-      if (!pinnedDriver || radioMessages.length === 0) return;
-      const idx = findRadioIndexForT(currentT);
-      if (idx === radioIdx) return;
-      const movingForward = idx > radioIdx;
-      radioIdx = idx;
-      renderRadioPanel();
-      if (movingForward && idx >= 0) {
-        showRadioToast(radioMessages[idx]);
-      } else {
-        document.getElementById('radioToast').classList.remove('show');
-      }
-    }
-
-    function updateTooltip(drv) {
-      const svg = document.getElementById('trackSvg');
-      const tooltip = document.getElementById('tooltip');
-      const info = replayData.driver_info[drv];
-      const frames = replayData.frames[drv];
-      const idx = cursors[drv];
-      const frame = frames[idx];
-      if (!frame) return;
-      const isOut = dots[drv].dataset.out === '1';
-
-      const gap = isOut ? 'OUT'
-        : frame.lapped ? 'LAPPED'
-        : (frame.gap != null ? `+${frame.gap.toFixed(2)}s` : (frame.position === 1 ? '—' : 'N/A'));
-      const ahead = frame.driverAhead || 'Leader';
-
-      const posDisplay = frame.position ?? (info.gridPosition != null ? `${info.gridPosition}* (grid)` : 'N/A');
-
-      const sparkHtml = !isOut ? `<div class="tooltip-spark">${buildSparklineSVG(drv, idx)}</div>` : '';
-
-      tooltip.innerHTML = `
-      <strong>${info.name}</strong> (${info.team})<br>
-      Lap: ${frame.lap ?? 'N/A'}${isOut ? ' (last known)' : ''}<br>
-      Position: ${posDisplay}<br>
-      Tyre: ${frame.compound ?? 'N/A'}<br>
-      Speed: ${frame.speed != null ? frame.speed.toFixed(0) + ' mph' : 'N/A'}<br>
-      ${isOut ? 'Status: OUT' : `Gap to ${ahead}: ${gap}`}
-      ${sparkHtml}
       `;
-
-      const dot = dots[drv];
-      const pt = svg.createSVGPoint();
-      pt.x = parseFloat(dot.getAttribute('cx'));
-      pt.y = parseFloat(dot.getAttribute('cy'));
-      const screenPt = pt.matrixTransform(svg.getScreenCTM());
-
-      tooltip.style.left = (screenPt.x + window.scrollX + 12) + 'px';
-      tooltip.style.top = (screenPt.y + window.scrollY - 10) + 'px';
-      tooltip.style.display = 'block';
     }
 
-    function pinDriver(drv) {
-      if (!replayData) return;
-      pinnedDriver = (pinnedDriver === drv) ? null : drv;
-      const tooltip = document.getElementById('tooltip');
-      if (pinnedDriver) {
-        updateTooltip(pinnedDriver);
-        loadRadioForDriver(pinnedDriver);
-      } else {
-        tooltip.style.display = 'none';
-        clearRadioState();
-      }
-    }
+    const gap = r.frame.lapped ? 'LAP'
+      : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
 
-    function renderLeaderboard() {
-      const board = document.getElementById('leaderboard');
+    const posLabel = r.livePos != null ? r.livePos
+      : (r.displayPos != null ? `${r.displayPos}*` : '?');
+    const posTitle = r.livePos == null
+      ? (r.displayPos != null ? 'Grid position — no live timing recorded' : 'No position data available')
+      : '';
 
-      const rows = drivers.map(drv => {
-        const info = replayData.driver_info[drv];
-        const frames = replayData.frames[drv];
-        const isOut = dots[drv].dataset.out === '1';
-        const frame = (frames && frames.length > 0) ? frames[cursors[drv]] : null;
-        const pitTag = frame && frame.inPit ? 'PIT' : '';
+    return `
+      <div class="lb-row${pinnedClass}" data-drv="${r.drv}">
+        <span class="lb-tab" style="background:${teamColor(r.info.team)}"></span>
+        <span class="lb-pos" title="${posTitle}">${posLabel}</span>
+        <span class="lb-name">${r.info.name}</span>
+        ${flChip}
+        <span class="lb-meta">L${r.frame.lap} · ${r.frame.compound ?? ''}${r.pitTag ? ' · ' + r.pitTag : ''} · ${gap}</span>
+      </div>
+    `;
+  }).join('');
 
-        const livePos = frame ? frame.position : null;
-        const displayPos = livePos ?? info.gridPosition ?? null;
-        const sortPos = displayPos ?? 999;
-
-        return { drv, info, frame, isOut, pitTag, livePos, displayPos, sortPos };
-      })
-      .filter(r => r.frame || r.isOut)
-      .sort((a, b) => {
-        if (a.isOut !== b.isOut) return a.isOut ? 1 : -1;
-        if (a.isOut) return (b.info.lastLap ?? 0) - (a.info.lastLap ?? 0);
-        return a.sortPos - b.sortPos;
-      });
-
-      board.innerHTML = rows.map(r => {
-        const flChip = (currentFlHolder && currentFlHolder.drv === r.drv) ? '<span class="lb-fl-chip">FL</span>' : '';
-        const pinnedClass = (pinnedDriver === r.drv) ? ' lb-row--pinned' : '';
-
-        if (r.isOut) {
-          const lapLabel = r.frame ? r.frame.lap : r.info.lastLap;
-          return `
-            <div class="lb-row lb-row--out${pinnedClass}" data-drv="${r.drv}">
-              <span class="lb-tab" style="background:${teamColor(r.info.team)}"></span>
-              <span class="lb-pos">–</span>
-              <span class="lb-name">${r.info.name}</span>
-              ${flChip}
-              <span class="lb-meta">OUT · L${lapLabel ?? '?'}</span>
-            </div>
-          `;
-        }
-
-        const gap = r.frame.lapped ? 'LAP'
-          : (r.frame.gap != null ? `+${r.frame.gap.toFixed(2)}s` : (r.frame.position === 1 ? '—' : 'N/A'));
-
-        const posLabel = r.livePos != null ? r.livePos
-          : (r.displayPos != null ? `${r.displayPos}*` : '?');
-        const posTitle = r.livePos == null
-          ? (r.displayPos != null ? 'Grid position — no live timing recorded' : 'No position data available')
-          : '';
-
-        return `
-          <div class="lb-row${pinnedClass}" data-drv="${r.drv}">
-            <span class="lb-tab" style="background:${teamColor(r.info.team)}"></span>
-            <span class="lb-pos" title="${posTitle}">${posLabel}</span>
-            <span class="lb-name">${r.info.name}</span>
-            ${flChip}
-            <span class="lb-meta">L${r.frame.lap} · ${r.frame.compound ?? ''}${r.pitTag ? ' · ' + r.pitTag : ''} · ${gap}</span>
-          </div>
-        `;
-      }).join('');
-
-      board.querySelectorAll('.lb-row').forEach(row => {
-        row.addEventListener('click', (e) => {
-          e.stopPropagation();
-          pinDriver(row.dataset.drv);
-        });
-      });
-    }
-
-    function togglePlayPause() {
-      isPlaying = !isPlaying;
-      document.getElementById('playPauseBtn').textContent = isPlaying ? 'Pause' : 'Play';
-    }
-
-    function changeSpeed(delta) {
-      playbackSpeed = Math.max(0.5, Math.min(8, +(playbackSpeed + delta).toFixed(1)));
-      document.getElementById('speedLabel').textContent = playbackSpeed + 'x';
-    }
-
-    function restartPlayback() {
-      currentT = minT;
-      isPlaying = true;
-      document.getElementById('playPauseBtn').textContent = 'Pause';
-      renderFrame();
-    }
-
-    function toggleLoop() {
-      loopEnabled = !loopEnabled;
-      document.getElementById('loopBtn').classList.toggle('btn-primary', loopEnabled);
-    }
-
-    function stepFrame(direction) {
-      isPlaying = false;
-      document.getElementById('playPauseBtn').textContent = 'Play';
-      currentT = Math.max(minT, Math.min(maxT, currentT + direction * step));
-      renderFrame();
-    }
-
-    function startScan(direction) {
-      if (scanHandle) return;
-      scanHandle = setInterval(() => {
-        currentT += direction * step * 5 * playbackSpeed;
-        currentT = Math.max(minT, Math.min(maxT, currentT));
-        renderFrame();
-      }, 50);
-    }
-    function stopScan() {
-      clearInterval(scanHandle);
-      scanHandle = null;
-    }
-
-    document.addEventListener('keydown', (e) => {
-      const active = document.activeElement;
-      if (active && ['INPUT', 'SELECT', 'TEXTAREA'].includes(active.tagName)) return;
-
-      switch (e.code) {
-        case 'Space':
-          e.preventDefault();
-          togglePlayPause();
-          break;
-        case 'ArrowLeft':
-          e.preventDefault();
-          if (!scanHandle) startScan(-1);
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          if (!scanHandle) startScan(1);
-          break;
-        case 'ArrowUp':
-          e.preventDefault();
-          if (!e.repeat) changeSpeed(0.5);
-          break;
-        case 'ArrowDown':
-          e.preventDefault();
-          if (!e.repeat) changeSpeed(-0.5);
-          break;
-      }
+  board.querySelectorAll('.lb-row').forEach(row => {
+    row.addEventListener('click', (e) => {
+      e.stopPropagation();
+      pinDriver(row.dataset.drv);
     });
+  });
+}
 
-    document.addEventListener('keyup', (e) => {
-      if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') stopScan();
-    });
+function togglePlayPause() {
+  isPlaying = !isPlaying;
+  document.getElementById('playPauseBtn').textContent = isPlaying ? 'Pause' : 'Play';
+}
 
-    window.addEventListener('blur', stopScan);
-  </script>
+function changeSpeed(delta) {
+  playbackSpeed = Math.max(0.5, Math.min(8, +(playbackSpeed + delta).toFixed(1)));
+  document.getElementById('speedLabel').textContent = playbackSpeed + 'x';
+}
+
+function restartPlayback() {
+  currentT = minT;
+  isPlaying = true;
+  document.getElementById('playPauseBtn').textContent = 'Pause';
+  renderFrame();
+}
+
+function toggleLoop() {
+  loopEnabled = !loopEnabled;
+  document.getElementById('loopBtn').classList.toggle('btn-primary', loopEnabled);
+}
+
+function stepFrame(direction) {
+  isPlaying = false;
+  document.getElementById('playPauseBtn').textContent = 'Play';
+  currentT = Math.max(minT, Math.min(maxT, currentT + direction * step));
+  renderFrame();
+}
+
+function startScan(direction) {
+  if (scanHandle) return;
+  scanHandle = setInterval(() => {
+    currentT += direction * step * 5 * playbackSpeed;
+    currentT = Math.max(minT, Math.min(maxT, currentT));
+    renderFrame();
+  }, 50);
+}
+function stopScan() {
+  clearInterval(scanHandle);
+  scanHandle = null;
+}
+
+document.addEventListener('keydown', (e) => {
+  const active = document.activeElement;
+  if (active && ['INPUT', 'SELECT', 'TEXTAREA'].includes(active.tagName)) return;
+
+  switch (e.code) {
+    case 'Space':
+      e.preventDefault();
+      togglePlayPause();
+      break;
+    case 'ArrowLeft':
+      e.preventDefault();
+      if (!scanHandle) startScan(-1);
+      break;
+    case 'ArrowRight':
+      e.preventDefault();
+      if (!scanHandle) startScan(1);
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      if (!e.repeat) changeSpeed(0.5);
+      break;
+    case 'ArrowDown':
+      e.preventDefault();
+      if (!e.repeat) changeSpeed(-0.5);
+      break;
+  }
+});
+
+document.addEventListener('keyup', (e) => {
+  if (e.code === 'ArrowLeft' || e.code === 'ArrowRight') stopScan();
+});
+
+window.addEventListener('blur', stopScan);
+</script>
 </body>
 </html>
